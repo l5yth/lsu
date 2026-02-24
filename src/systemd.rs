@@ -127,6 +127,7 @@ mod tests {
             sub_filter: "running".to_string(),
             refresh_secs: 0,
             show_help: false,
+            show_version: false,
         };
         let units = vec![
             SystemctlUnit {
@@ -164,6 +165,7 @@ mod tests {
             sub_filter: "all".to_string(),
             refresh_secs: 0,
             show_help: false,
+            show_version: false,
         };
         assert!(is_full_all(&all_cfg));
 
@@ -182,6 +184,7 @@ mod tests {
             sub_filter: "running".to_string(),
             refresh_secs: 0,
             show_help: false,
+            show_version: false,
         };
         assert!(!should_fetch_all(&default_cfg));
 

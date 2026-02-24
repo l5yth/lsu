@@ -38,7 +38,7 @@ use std::{
 };
 
 use crate::{
-    cli::{Config, parse_args, usage},
+    cli::{Config, parse_args, usage, version_text},
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, preserve_selection, seed_logs_from_previous, sort_rows},
     systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
@@ -139,6 +139,10 @@ fn spawn_detail_worker(unit: String, request_id: u64) -> Receiver<WorkerMsg> {
 /// Run the interactive terminal UI.
 pub fn run() -> Result<()> {
     let config = parse_args(env::args())?;
+    if config.show_version {
+        println!("{}", version_text());
+        return Ok(());
+    }
     if config.show_help {
         println!("{}", usage());
         return Ok(());

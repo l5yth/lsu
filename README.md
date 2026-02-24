@@ -5,6 +5,8 @@
 
 `lsu` is a Rust terminal UI for viewing `systemd` service units and their latest log line.
 
+![lsu terminal UI screenshot](assets/images/lsu-tui-overview.png)
+
 ## Dependencies
 
 - Linux system with `systemd`

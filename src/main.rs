@@ -154,6 +154,11 @@ fn is_full_all(cfg: &Config) -> bool {
     cfg.load_filter == "all" && cfg.active_filter == "all" && cfg.sub_filter == "all"
 }
 
+fn should_fetch_all(cfg: &Config) -> bool {
+    // Only the default filter set can be safely satisfied from --state=running.
+    !(cfg.load_filter == "all" && cfg.active_filter == "active" && cfg.sub_filter == "running")
+}
+
 /// Run a command and capture stdout as String.
 fn cmd_stdout(cmd: &mut Command) -> Result<String> {
     let out = cmd.output().with_context(|| "failed to spawn command")?;
@@ -492,7 +497,7 @@ fn main() -> Result<()> {
             match phase {
                 LoadPhase::Idle => {}
                 LoadPhase::FetchingUnits => {
-                    let fetch_all = is_full_all(&config) || config.active_filter != "active";
+                    let fetch_all = should_fetch_all(&config);
                     match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
                         Ok(units) => {
                             let previous_rows = rows.clone();
@@ -530,9 +535,9 @@ fn main() -> Result<()> {
                         let units: Vec<String> =
                             rows[next_idx..end].iter().map(|r| r.unit.clone()).collect();
                         let logs = latest_log_lines_batch(&units);
-                        for idx in next_idx..end {
-                            if let Some(log) = logs.get(rows[idx].unit.as_str()) {
-                                rows[idx].last_log = log.clone();
+                        for row in rows.iter_mut().take(end).skip(next_idx) {
+                            if let Some(log) = logs.get(row.unit.as_str()) {
+                                row.last_log = log.clone();
                             }
                         }
                         next_idx = end;
@@ -557,17 +562,16 @@ fn main() -> Result<()> {
             }
 
             // input
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
-                        match k.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char('r') => {
-                                refresh_requested = true;
-                            }
-                            _ => {}
-                        }
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(k) = event::read()?
+                && k.kind == KeyEventKind::Press
+            {
+                match k.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char('r') => {
+                        refresh_requested = true;
                     }
+                    _ => {}
                 }
             }
         }
@@ -680,6 +684,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_rejects_unknown_arg() {
+        let err = parse_args(vec!["lsu", "--bogus"]).expect_err("unknown arg should fail");
+        assert!(err.to_string().contains("unknown argument"));
+    }
+
+    #[test]
+    fn parse_args_rejects_missing_filter_values() {
+        let err = parse_args(vec!["lsu", "--load"]).expect_err("missing --load value");
+        assert!(err.to_string().contains("missing value for --load"));
+
+        let err = parse_args(vec!["lsu", "--active"]).expect_err("missing --active value");
+        assert!(err.to_string().contains("missing value for --active"));
+
+        let err = parse_args(vec!["lsu", "--sub"]).expect_err("missing --sub value");
+        assert!(err.to_string().contains("missing value for --sub"));
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_refresh_value() {
+        let err = parse_args(vec!["lsu", "--refresh", "abc"]).expect_err("invalid refresh");
+        assert!(err.to_string().contains("invalid refresh value"));
+    }
+
+    #[test]
     fn parse_args_allows_zero_refresh() {
         let cfg = parse_args(vec!["lsu", "-r", "0"]).expect("zero should be allowed");
         assert_eq!(cfg.refresh_secs, 0);
@@ -770,6 +798,96 @@ mod tests {
     }
 
     #[test]
+    fn filter_matches_supports_all_and_exact() {
+        assert!(filter_matches("running", "all"));
+        assert!(filter_matches("running", "running"));
+        assert!(!filter_matches("running", "dead"));
+    }
+
+    #[test]
+    fn is_full_all_only_true_when_all_three_filters_are_all() {
+        let all_cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "all".to_string(),
+            sub_filter: "all".to_string(),
+            refresh_secs: 0,
+            show_help: false,
+        };
+        assert!(is_full_all(&all_cfg));
+
+        let partial_cfg = Config {
+            sub_filter: "running".to_string(),
+            ..all_cfg
+        };
+        assert!(!is_full_all(&partial_cfg));
+    }
+
+    #[test]
+    fn should_fetch_all_only_false_for_default_running_filter_set() {
+        let default_cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            refresh_secs: 0,
+            show_help: false,
+        };
+        assert!(!should_fetch_all(&default_cfg));
+
+        let sub_all = Config {
+            sub_filter: "all".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&sub_all));
+
+        let sub_exited = Config {
+            sub_filter: "exited".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&sub_exited));
+
+        let active_inactive = Config {
+            active_filter: "inactive".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&active_inactive));
+
+        let load_not_found = Config {
+            load_filter: "not-found".to_string(),
+            ..default_cfg
+        };
+        assert!(should_fetch_all(&load_not_found));
+    }
+
+    #[test]
+    fn sort_rows_running_mode_sorts_by_unit_name_only() {
+        let mut rows = vec![
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "z.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "a.service".to_string(),
+                load: "not-found".to_string(),
+                active: "failed".to_string(),
+                sub: "dead".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+        ];
+        sort_rows(&mut rows, false);
+        assert_eq!(rows[0].unit, "a.service");
+        assert_eq!(rows[1].unit, "z.service");
+    }
+
+    #[test]
     fn seed_logs_from_previous_preserves_known_logs_by_unit() {
         let previous = vec![UnitRow {
             dot: '●',
@@ -819,5 +937,22 @@ mod tests {
         let logs = parse_latest_logs_from_journal_json(output, &wanted);
         assert_eq!(logs.get("a.service").map(String::as_str), Some("newest a"));
         assert_eq!(logs.get("b.service").map(String::as_str), Some("newest b"));
+    }
+
+    #[test]
+    fn parses_latest_logs_ignores_invalid_lines_and_missing_fields() {
+        let output = r#"not-json
+{"_SYSTEMD_UNIT":"a.service"}
+{"MESSAGE":"no unit"}
+{"_SYSTEMD_UNIT":"a.service","MESSAGE":"ok"}"#;
+        let wanted = HashSet::from(["a.service".to_string()]);
+        let logs = parse_latest_logs_from_journal_json(output, &wanted);
+        assert_eq!(logs.get("a.service").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn latest_log_lines_batch_empty_input_returns_empty_map() {
+        let logs = latest_log_lines_batch(&[]);
+        assert!(logs.is_empty());
     }
 }

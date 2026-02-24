@@ -2,3 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 /target
+
+# Packaging build artifacts
+/packaging/archlinux/*.pkg.tar.*
+/packaging/archlinux/src/
+/packaging/archlinux/pkg/
+/packaging/archlinux/lsu/
+/packaging/gentoo/**/files/

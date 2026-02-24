@@ -16,6 +16,8 @@ use std::{
     collections::{HashMap, HashSet},
     env, io,
     process::Command,
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -61,7 +63,18 @@ struct Config {
 enum LoadPhase {
     Idle,
     FetchingUnits,
-    FetchingLogs { next_idx: usize },
+    FetchingLogs,
+}
+
+enum WorkerMsg {
+    UnitsLoaded(Vec<UnitRow>),
+    LogsProgress {
+        done: usize,
+        total: usize,
+        logs: Vec<(String, String)>,
+    },
+    Finished,
+    Error(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -440,6 +453,55 @@ fn preserve_selection(prev_unit: Option<String>, rows: &[UnitRow], selected_idx:
     }
 }
 
+fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let fetch_all = should_fetch_all(&config);
+        let units = match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
+            Ok(units) => units,
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::Error(e.to_string()));
+                return;
+            }
+        };
+
+        let mut rows = build_rows(units);
+        seed_logs_from_previous(&mut rows, &previous_rows);
+        sort_rows(&mut rows, is_full_all(&config));
+        let total = rows.len();
+
+        if tx.send(WorkerMsg::UnitsLoaded(rows.clone())).is_err() {
+            return;
+        }
+        if total == 0 {
+            let _ = tx.send(WorkerMsg::Finished);
+            return;
+        }
+
+        const LOG_BATCH_SIZE: usize = 12;
+        let mut done = 0usize;
+        while done < rows.len() {
+            let end = std::cmp::min(done + LOG_BATCH_SIZE, rows.len());
+            let units: Vec<String> = rows[done..end].iter().map(|r| r.unit.clone()).collect();
+            let logs = latest_log_lines_batch(&units).into_iter().collect();
+            if tx
+                .send(WorkerMsg::LogsProgress {
+                    done: end,
+                    total,
+                    logs,
+                })
+                .is_err()
+            {
+                return;
+            }
+            done = end;
+        }
+
+        let _ = tx.send(WorkerMsg::Finished);
+    });
+    rx
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode().context("enable_raw_mode failed")?;
     let mut stdout = io::stdout();
@@ -473,6 +535,7 @@ fn main() -> Result<()> {
     let mut last_refresh = Instant::now();
     let mut refresh_requested = true;
     let mut phase = LoadPhase::Idle;
+    let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
 
     // state
     let mut rows: Vec<UnitRow> = Vec::new();
@@ -595,30 +658,24 @@ fn main() -> Result<()> {
                 }
             })?;
 
-            if refresh_requested && matches!(phase, LoadPhase::Idle) {
+            if refresh_requested && matches!(phase, LoadPhase::Idle) && worker_rx.is_none() {
                 phase = LoadPhase::FetchingUnits;
                 status_line = format!(
                     "{mode_label}: loading units... | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
                 );
                 refresh_requested = false;
                 last_refresh = Instant::now();
+                worker_rx = Some(spawn_refresh_worker(config.clone(), rows.clone()));
             }
 
-            match phase {
-                LoadPhase::Idle => {}
-                LoadPhase::FetchingUnits => {
-                    let fetch_all = should_fetch_all(&config);
-                    match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
-                        Ok(units) => {
+            if let Some(rx) = worker_rx.as_ref() {
+                let mut clear_worker = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(WorkerMsg::UnitsLoaded(new_rows)) => {
                             let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
-                            let previous_rows = rows.clone();
-                            let mut new_rows = build_rows(units);
-                            seed_logs_from_previous(&mut new_rows, &previous_rows);
-                            sort_rows(&mut new_rows, is_full_all(&config));
-                            let row_count = new_rows.len();
                             rows = new_rows;
                             preserve_selection(previous_selected, &rows, &mut selected_idx);
-
                             if rows.is_empty() {
                                 status_line = format!(
                                     "{mode_label}: 0 | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
@@ -627,49 +684,62 @@ fn main() -> Result<()> {
                             } else {
                                 status_line = format!(
                                     "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                    row_count, row_count,
+                                    rows.len(),
+                                    rows.len(),
                                 );
-                                phase = LoadPhase::FetchingLogs { next_idx: 0 };
+                                phase = LoadPhase::FetchingLogs;
                             }
                         }
-                        Err(e) => {
+                        Ok(WorkerMsg::LogsProgress { done, total, logs }) => {
+                            let logs_map: HashMap<&str, &str> =
+                                logs.iter().map(|(u, l)| (u.as_str(), l.as_str())).collect();
+                            for row in &mut rows {
+                                if let Some(log) = logs_map.get(row.unit.as_str()) {
+                                    row.last_log = (*log).to_string();
+                                }
+                            }
+                            if done >= total {
+                                status_line = format!(
+                                    "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    rows.len(),
+                                );
+                            } else {
+                                status_line = format!(
+                                    "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    rows.len(),
+                                    done,
+                                    total,
+                                );
+                            }
+                            phase = LoadPhase::FetchingLogs;
+                        }
+                        Ok(WorkerMsg::Finished) => {
+                            phase = LoadPhase::Idle;
+                            status_line = format!(
+                                "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                rows.len(),
+                            );
+                            clear_worker = true;
+                            break;
+                        }
+                        Ok(WorkerMsg::Error(e)) => {
                             status_line = format!(
                                 "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
                             );
                             phase = LoadPhase::Idle;
+                            clear_worker = true;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            phase = LoadPhase::Idle;
+                            clear_worker = true;
+                            break;
                         }
                     }
                 }
-                LoadPhase::FetchingLogs { mut next_idx } => {
-                    const LOG_BATCH_SIZE: usize = 12;
-                    if next_idx < rows.len() {
-                        let end = std::cmp::min(next_idx + LOG_BATCH_SIZE, rows.len());
-                        let units: Vec<String> =
-                            rows[next_idx..end].iter().map(|r| r.unit.clone()).collect();
-                        let logs = latest_log_lines_batch(&units);
-                        for row in rows.iter_mut().take(end).skip(next_idx) {
-                            if let Some(log) = logs.get(row.unit.as_str()) {
-                                row.last_log = log.clone();
-                            }
-                        }
-                        next_idx = end;
-                    }
-
-                    if next_idx >= rows.len() {
-                        status_line = format!(
-                            "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                            rows.len(),
-                        );
-                        phase = LoadPhase::Idle;
-                    } else {
-                        status_line = format!(
-                            "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                            rows.len(),
-                            next_idx,
-                            rows.len(),
-                        );
-                        phase = LoadPhase::FetchingLogs { next_idx };
-                    }
+                if clear_worker {
+                    worker_rx = None;
                 }
             }
 

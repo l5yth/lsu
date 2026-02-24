@@ -6,6 +6,12 @@ name = "lsu"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+description = "Terminal UI for systemd services and their journal"
+readme = "README.md"
+repository = "https://github.com/l5yth/lsu"
+homepage = "https://github.com/l5yth/lsu"
+keywords = ["systemd", "tui", "linux"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"

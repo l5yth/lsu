@@ -3,24 +3,40 @@
 
 # lsu
 
-`lsu` is a Rust terminal UI for viewing `systemd` service units and their latest log line.
+`lsu` is a Rust terminal UI for viewing `systemd` service units and their logs.
 
 ![lsu terminal UI screenshot](assets/images/lsu-tui-overview.png)
 
 ## Dependencies
 
-- Linux system with `systemd`
-- `systemctl` and `journalctl` available in `PATH`
-- Rust toolchain (Rust 2021 edition, Cargo)
+- any GNU/Linux system with `systemd`
+- `systemctl` and `journalctl` available in `$PATH` obviosly
+- Some current Rust stable toolchain (Rust 2024 edition, Cargo)
 
 Core crates: `ratatui`, `crossterm`, `serde`, `serde_json`, `anyhow`.
 
 ## Installation
 
+### Archlinux
+
+See [PKGBUILD](./packaging/archlinux/PKGBUILD)
+
+### Gentoo
+
+See [lsu-9999.ebuild](./packaging/gentoo/app-misc/lsu/lsu-9999.ebuild)
+
+### Cargo Crates
+
+```bash
+cargo install lsu
+```
+
+### From Source
+
 Build from source:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/l5yth/lsu.git
 cd lsu
 cargo build --release
 ```
@@ -34,7 +50,7 @@ Run the built binary:
 Or run directly in development:
 
 ```bash
-cargo run --
+cargo run --release --
 ```
 
 ## Usage
@@ -59,19 +75,25 @@ Examples:
 lsu
 lsu --all
 lsu --all --refresh 5
-lsu -r 0
+lsu --load failed
+lsu --active inactive
+lsu --sub exited
+lsu --load loaded --active inactive --sub dead
 ```
 
 In-app keys:
 
 - `q`: quit
 - `r`: refresh now
+- `↑` / `↓`: move selection in service unit list
+- `l` or `enter`: open detailed logs for selected service
+- Log view: `↑` / `↓` scroll logs, `b` or `esc` return to list
 
 ## Development
 
 ```bash
 cargo check
-cargo test
+cargo test --all --all-features --verbose
 cargo fmt --all
 cargo clippy --all-targets --all-features -D warnings
 ```

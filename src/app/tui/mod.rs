@@ -128,6 +128,8 @@ pub fn run() -> Result<()> {
     let mut refresh_requested = true;
     let mut phase = LoadPhase::Idle;
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
+    let mut loaded_once = false;
+    let mut last_load_error = false;
 
     let mut rows: Vec<UnitRow> = Vec::new();
     let mut row_index_by_unit: HashMap<String, usize> = HashMap::new();
@@ -164,51 +166,84 @@ pub fn run() -> Result<()> {
                     .split(size);
                 match view_mode {
                     ViewMode::List => {
-                        let header = Row::new([
-                            Cell::from(" "),
-                            Cell::from("unit"),
-                            Cell::from("load"),
-                            Cell::from("active"),
-                            Cell::from("sub"),
-                            Cell::from("description"),
-                            Cell::from("log (last line)"),
-                        ])
-                        .style(Style::default().add_modifier(Modifier::BOLD));
+                        if rows.is_empty() {
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!("systemd {mode_label}"));
+                            let inner = block.inner(chunks[0]);
+                            f.render_widget(block, chunks[0]);
 
-                        let table_rows = rows.iter().map(|r| {
-                            Row::new([
-                                Cell::from(r.dot.to_string()).style(r.dot_style),
-                                Cell::from(r.unit.clone()),
-                                Cell::from(r.load.clone()),
-                                Cell::from(r.active.clone()),
-                                Cell::from(r.sub.clone()),
-                                Cell::from(r.description.clone()),
-                                Cell::from(r.last_log.clone()),
+                            let message = if matches!(phase, LoadPhase::Idle)
+                                && loaded_once
+                                && !last_load_error
+                                && worker_rx.is_none()
+                                && !refresh_requested
+                            {
+                                format!(
+                                    "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
+                                    config.load_filter, config.active_filter, config.sub_filter
+                                )
+                            } else if last_load_error
+                                && matches!(phase, LoadPhase::Idle)
+                                && worker_rx.is_none()
+                            {
+                                "Last refresh failed. Press r to retry.".to_string()
+                            } else {
+                                "Loading units and logs...".to_string()
+                            };
+                            let p = Paragraph::new(message)
+                                .alignment(Alignment::Center)
+                                .style(Style::default().fg(Color::DarkGray));
+                            f.render_widget(p, inner);
+                        } else {
+                            let header = Row::new([
+                                Cell::from(" "),
+                                Cell::from("unit"),
+                                Cell::from("load"),
+                                Cell::from("active"),
+                                Cell::from("sub"),
+                                Cell::from("description"),
+                                Cell::from("log (last line)"),
                             ])
-                        });
+                            .style(Style::default().add_modifier(Modifier::BOLD));
 
-                        let widths = [
-                            Constraint::Length(2),
-                            Constraint::Length(38),
-                            Constraint::Length(8),
-                            Constraint::Length(10),
-                            Constraint::Length(12),
-                            Constraint::Length(36),
-                            Constraint::Min(20),
-                        ];
+                            let table_rows = rows.iter().map(|r| {
+                                Row::new([
+                                    Cell::from(r.dot.to_string()).style(r.dot_style),
+                                    Cell::from(r.unit.clone()),
+                                    Cell::from(r.load.clone()),
+                                    Cell::from(r.active.clone()),
+                                    Cell::from(r.sub.clone()),
+                                    Cell::from(r.description.clone()),
+                                    Cell::from(r.last_log.clone()),
+                                ])
+                            });
 
-                        list_table_state.select((!rows.is_empty()).then_some(selected_idx));
-                        let t = Table::new(table_rows, widths)
-                            .header(header)
-                            .block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .title(format!("systemd {mode_label}")),
-                            )
-                            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-                            .column_spacing(1);
+                            let widths = [
+                                Constraint::Length(2),
+                                Constraint::Length(38),
+                                Constraint::Length(8),
+                                Constraint::Length(10),
+                                Constraint::Length(12),
+                                Constraint::Length(36),
+                                Constraint::Min(20),
+                            ];
 
-                        f.render_stateful_widget(t, chunks[0], &mut list_table_state);
+                            list_table_state.select((!rows.is_empty()).then_some(selected_idx));
+                            let t = Table::new(table_rows, widths)
+                                .header(header)
+                                .block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title(format!("systemd {mode_label}")),
+                                )
+                                .row_highlight_style(
+                                    Style::default().add_modifier(Modifier::REVERSED),
+                                )
+                                .column_spacing(1);
+
+                            f.render_stateful_widget(t, chunks[0], &mut list_table_state);
+                        }
 
                         let footer = Paragraph::new(status_line.clone())
                             .style(Style::default().fg(Color::DarkGray));
@@ -265,6 +300,8 @@ pub fn run() -> Result<()> {
                 loop {
                     match rx.try_recv() {
                         Ok(WorkerMsg::UnitsLoaded(new_rows)) => {
+                            loaded_once = true;
+                            last_load_error = false;
                             let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
                             rows = new_rows;
                             row_index_by_unit = rows
@@ -320,6 +357,7 @@ pub fn run() -> Result<()> {
                             break;
                         }
                         Ok(WorkerMsg::Error(e)) => {
+                            last_load_error = true;
                             status_line = format!(
                                 "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
                             );

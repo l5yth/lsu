@@ -1,7 +1,7 @@
 # Copyright (c) 2026 l5yth
 # SPDX-License-Identifier: Apache-2.0
 
-name: Linux Build
+name: Linux
 
 on:
   push:
@@ -10,14 +10,14 @@ on:
     branches: [main]
 
 jobs:
-  archlinux-package:
+  pkgbuild:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build dependencies
         run: pacman -Syu --noconfirm --needed base-devel git sudo rust
@@ -29,14 +29,14 @@ jobs:
           chown -R builder:builder "${GITHUB_WORKSPACE}"
           su - builder -c "cd '${GITHUB_WORKSPACE}/packaging/archlinux' && sed -i \"s|^source=.*$|source=(\\\"lsu::git+https://github.com/${GITHUB_REPOSITORY}.git#commit=${GITHUB_SHA}\\\")|\" PKGBUILD && makepkg --syncdeps --noconfirm --cleanbuild --clean --install"
 
-  gentoo-ebuild:
+  ebuild:
     runs-on: ubuntu-latest
     container:
       image: gentoo/stage3:latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Bootstrap Gentoo repo and profile
         run: |

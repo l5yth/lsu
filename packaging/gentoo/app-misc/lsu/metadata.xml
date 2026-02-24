@@ -2,10 +2,11 @@
 <!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
 <pkgmetadata>
   <maintainer type="person">
-    <email>l5yth@users.noreply.github.com</email>
+    <email>ebuild@l5y.tech</email>
     <name>l5yth</name>
   </maintainer>
   <upstream>
+    <homepage>https://github.com/l5yth/lsu</homepage>
     <remote-id type="github">l5yth/lsu</remote-id>
   </upstream>
   <longdescription>

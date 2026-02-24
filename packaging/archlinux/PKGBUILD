@@ -1,5 +1,6 @@
 # Copyright (c) 2026 l5yth
 # SPDX-License-Identifier: Apache-2.0
+# Maintainer: l5yth <aur@l5y.tech>
 
 pkgname=lsu-git
 pkgver=0.1.0.r0.g0000000

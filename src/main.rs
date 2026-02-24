@@ -42,9 +42,11 @@ struct UnitRow {
     last_log: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Config {
-    show_all: bool,
+    load_filter: String,
+    active_filter: String,
+    sub_filter: String,
     refresh_secs: u64,
     show_help: bool,
 }
@@ -62,7 +64,10 @@ fn usage() -> &'static str {
 Show systemd services in a terminal UI.
 
 Options:
-  -a, --all            Include non-active service units
+  -a, --all            Shorthand for --load all --active all --sub all
+      --load <value>   Filter by load state (e.g. loaded, not-found, masked, all)
+      --active <value> Filter by active state (e.g. active, inactive, failed, all)
+      --sub <value>    Filter by sub state (e.g. running, exited, dead, all)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -h, --help           Show this help text"
 }
@@ -80,7 +85,9 @@ where
     S: Into<String>,
 {
     let mut cfg = Config {
-        show_all: false,
+        load_filter: "all".to_string(),
+        active_filter: "active".to_string(),
+        sub_filter: "running".to_string(),
         refresh_secs: 0,
         show_help: false,
     };
@@ -90,8 +97,30 @@ where
 
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-a" | "--all" => cfg.show_all = true,
+            "-a" | "--all" => {
+                cfg.load_filter = "all".to_string();
+                cfg.active_filter = "all".to_string();
+                cfg.sub_filter = "all".to_string();
+            }
             "-h" | "--help" => cfg.show_help = true,
+            "--load" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
+                cfg.load_filter = value;
+            }
+            "--active" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
+                cfg.active_filter = value;
+            }
+            "--sub" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
+                cfg.sub_filter = value;
+            }
             "-r" | "--refresh" => {
                 let value = it
                     .next()
@@ -99,7 +128,13 @@ where
                 cfg.refresh_secs = parse_refresh_secs(&value)?;
             }
             _ => {
-                if let Some(value) = arg.strip_prefix("--refresh=") {
+                if let Some(value) = arg.strip_prefix("--load=") {
+                    cfg.load_filter = value.to_string();
+                } else if let Some(value) = arg.strip_prefix("--active=") {
+                    cfg.active_filter = value.to_string();
+                } else if let Some(value) = arg.strip_prefix("--sub=") {
+                    cfg.sub_filter = value.to_string();
+                } else if let Some(value) = arg.strip_prefix("--refresh=") {
                     cfg.refresh_secs = parse_refresh_secs(value)?;
                 } else {
                     return Err(anyhow!("unknown argument: {arg}\n\n{}", usage()));
@@ -109,6 +144,19 @@ where
     }
 
     Ok(cfg)
+}
+
+fn filter_matches(value: &str, wanted: &str) -> bool {
+    wanted == "all" || value == wanted
+}
+
+fn is_full_all(cfg: &Config) -> bool {
+    cfg.load_filter == "all" && cfg.active_filter == "all" && cfg.sub_filter == "all"
+}
+
+fn should_fetch_all(cfg: &Config) -> bool {
+    // Only the default filter set can be safely satisfied from --state=running.
+    !(cfg.load_filter == "all" && cfg.active_filter == "active" && cfg.sub_filter == "running")
 }
 
 /// Run a command and capture stdout as String.
@@ -145,6 +193,17 @@ fn fetch_services(show_all: bool) -> Result<Vec<SystemctlUnit>> {
     let units: Vec<SystemctlUnit> =
         serde_json::from_str(&s).context("failed to parse systemctl JSON")?;
     Ok(units)
+}
+
+fn filter_services(units: Vec<SystemctlUnit>, cfg: &Config) -> Vec<SystemctlUnit> {
+    units
+        .into_iter()
+        .filter(|u| {
+            filter_matches(&u.load, &cfg.load_filter)
+                && filter_matches(&u.active, &cfg.active_filter)
+                && filter_matches(&u.sub, &cfg.sub_filter)
+        })
+        .collect()
 }
 
 /// Get the last journal line for one unit.
@@ -352,11 +411,7 @@ fn main() -> Result<()> {
 
     // state
     let mut rows: Vec<UnitRow> = Vec::new();
-    let mode_label = if config.show_all {
-        "all services"
-    } else {
-        "running services"
-    };
+    let mode_label = "services";
     let refresh_label = if config.refresh_secs == 0 {
         "off".to_string()
     } else {
@@ -375,7 +430,7 @@ fn main() -> Result<()> {
             }
 
             terminal.draw(|f| {
-                let size = f.size();
+                let size = f.area();
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -430,7 +485,7 @@ fn main() -> Result<()> {
                 f.render_widget(footer, chunks[1]);
             })?;
 
-            if refresh_requested {
+            if refresh_requested && matches!(phase, LoadPhase::Idle) {
                 phase = LoadPhase::FetchingUnits;
                 status_line = format!(
                     "{mode_label}: loading units... | auto-refresh: {refresh_label} | q: quit | r: refresh"
@@ -441,35 +496,38 @@ fn main() -> Result<()> {
 
             match phase {
                 LoadPhase::Idle => {}
-                LoadPhase::FetchingUnits => match fetch_services(config.show_all) {
-                    Ok(units) => {
-                        let previous_rows = rows.clone();
-                        let mut new_rows = build_rows(units);
-                        seed_logs_from_previous(&mut new_rows, &previous_rows);
-                        sort_rows(&mut new_rows, config.show_all);
-                        let row_count = new_rows.len();
-                        rows = new_rows;
+                LoadPhase::FetchingUnits => {
+                    let fetch_all = should_fetch_all(&config);
+                    match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
+                        Ok(units) => {
+                            let previous_rows = rows.clone();
+                            let mut new_rows = build_rows(units);
+                            seed_logs_from_previous(&mut new_rows, &previous_rows);
+                            sort_rows(&mut new_rows, is_full_all(&config));
+                            let row_count = new_rows.len();
+                            rows = new_rows;
 
-                        if rows.is_empty() {
+                            if rows.is_empty() {
+                                status_line = format!(
+                                    "{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                );
+                                phase = LoadPhase::Idle;
+                            } else {
+                                status_line = format!(
+                                    "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                    row_count, row_count,
+                                );
+                                phase = LoadPhase::FetchingLogs { next_idx: 0 };
+                            }
+                        }
+                        Err(e) => {
                             status_line = format!(
-                                "{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
                             );
                             phase = LoadPhase::Idle;
-                        } else {
-                            status_line = format!(
-                                "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
-                                row_count, row_count,
-                            );
-                            phase = LoadPhase::FetchingLogs { next_idx: 0 };
                         }
                     }
-                    Err(e) => {
-                        status_line = format!(
-                            "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
-                        );
-                        phase = LoadPhase::Idle;
-                    }
-                },
+                }
                 LoadPhase::FetchingLogs { mut next_idx } => {
                     const LOG_BATCH_SIZE: usize = 12;
                     if next_idx < rows.len() {
@@ -477,9 +535,9 @@ fn main() -> Result<()> {
                         let units: Vec<String> =
                             rows[next_idx..end].iter().map(|r| r.unit.clone()).collect();
                         let logs = latest_log_lines_batch(&units);
-                        for idx in next_idx..end {
-                            if let Some(log) = logs.get(rows[idx].unit.as_str()) {
-                                rows[idx].last_log = log.clone();
+                        for row in rows.iter_mut().take(end).skip(next_idx) {
+                            if let Some(log) = logs.get(row.unit.as_str()) {
+                                row.last_log = log.clone();
                             }
                         }
                         next_idx = end;
@@ -504,17 +562,16 @@ fn main() -> Result<()> {
             }
 
             // input
-            if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
-                        match k.code {
-                            KeyCode::Char('q') => break,
-                            KeyCode::Char('r') => {
-                                refresh_requested = true;
-                            }
-                            _ => {}
-                        }
+            if event::poll(Duration::from_millis(50))?
+                && let Event::Key(k) = event::read()?
+                && k.kind == KeyEventKind::Press
+            {
+                match k.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char('r') => {
+                        refresh_requested = true;
                     }
+                    _ => {}
                 }
             }
         }
@@ -587,7 +644,9 @@ mod tests {
     #[test]
     fn parse_args_defaults() {
         let cfg = parse_args(vec!["lsu"]).expect("default args should parse");
-        assert!(!cfg.show_all);
+        assert_eq!(cfg.load_filter, "all");
+        assert_eq!(cfg.active_filter, "active");
+        assert_eq!(cfg.sub_filter, "running");
         assert_eq!(cfg.refresh_secs, 0);
         assert!(!cfg.show_help);
     }
@@ -595,15 +654,57 @@ mod tests {
     #[test]
     fn parse_args_all_and_refresh() {
         let cfg = parse_args(vec!["lsu", "--all", "--refresh", "5"]).expect("flags should parse");
-        assert!(cfg.show_all);
+        assert_eq!(cfg.load_filter, "all");
+        assert_eq!(cfg.active_filter, "all");
+        assert_eq!(cfg.sub_filter, "all");
         assert_eq!(cfg.refresh_secs, 5);
         assert!(!cfg.show_help);
+    }
+
+    #[test]
+    fn parse_args_individual_filters() {
+        let cfg = parse_args(vec![
+            "lsu",
+            "--load",
+            "not-found",
+            "--active=inactive",
+            "--sub",
+            "dead",
+        ])
+        .expect("filter args should parse");
+        assert_eq!(cfg.load_filter, "not-found");
+        assert_eq!(cfg.active_filter, "inactive");
+        assert_eq!(cfg.sub_filter, "dead");
     }
 
     #[test]
     fn parse_args_help() {
         let cfg = parse_args(vec!["lsu", "-h"]).expect("help should parse");
         assert!(cfg.show_help);
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_arg() {
+        let err = parse_args(vec!["lsu", "--bogus"]).expect_err("unknown arg should fail");
+        assert!(err.to_string().contains("unknown argument"));
+    }
+
+    #[test]
+    fn parse_args_rejects_missing_filter_values() {
+        let err = parse_args(vec!["lsu", "--load"]).expect_err("missing --load value");
+        assert!(err.to_string().contains("missing value for --load"));
+
+        let err = parse_args(vec!["lsu", "--active"]).expect_err("missing --active value");
+        assert!(err.to_string().contains("missing value for --active"));
+
+        let err = parse_args(vec!["lsu", "--sub"]).expect_err("missing --sub value");
+        assert!(err.to_string().contains("missing value for --sub"));
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_refresh_value() {
+        let err = parse_args(vec!["lsu", "--refresh", "abc"]).expect_err("invalid refresh");
+        assert!(err.to_string().contains("invalid refresh value"));
     }
 
     #[test]
@@ -667,6 +768,126 @@ mod tests {
     }
 
     #[test]
+    fn filter_services_applies_all_filters() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            refresh_secs: 0,
+            show_help: false,
+        };
+        let units = vec![
+            SystemctlUnit {
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+            },
+            SystemctlUnit {
+                unit: "b.service".to_string(),
+                load: "loaded".to_string(),
+                active: "inactive".to_string(),
+                sub: "dead".to_string(),
+                description: String::new(),
+            },
+        ];
+        let out = filter_services(units, &cfg);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].unit, "a.service");
+    }
+
+    #[test]
+    fn filter_matches_supports_all_and_exact() {
+        assert!(filter_matches("running", "all"));
+        assert!(filter_matches("running", "running"));
+        assert!(!filter_matches("running", "dead"));
+    }
+
+    #[test]
+    fn is_full_all_only_true_when_all_three_filters_are_all() {
+        let all_cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "all".to_string(),
+            sub_filter: "all".to_string(),
+            refresh_secs: 0,
+            show_help: false,
+        };
+        assert!(is_full_all(&all_cfg));
+
+        let partial_cfg = Config {
+            sub_filter: "running".to_string(),
+            ..all_cfg
+        };
+        assert!(!is_full_all(&partial_cfg));
+    }
+
+    #[test]
+    fn should_fetch_all_only_false_for_default_running_filter_set() {
+        let default_cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            refresh_secs: 0,
+            show_help: false,
+        };
+        assert!(!should_fetch_all(&default_cfg));
+
+        let sub_all = Config {
+            sub_filter: "all".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&sub_all));
+
+        let sub_exited = Config {
+            sub_filter: "exited".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&sub_exited));
+
+        let active_inactive = Config {
+            active_filter: "inactive".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(should_fetch_all(&active_inactive));
+
+        let load_not_found = Config {
+            load_filter: "not-found".to_string(),
+            ..default_cfg
+        };
+        assert!(should_fetch_all(&load_not_found));
+    }
+
+    #[test]
+    fn sort_rows_running_mode_sorts_by_unit_name_only() {
+        let mut rows = vec![
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "z.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "a.service".to_string(),
+                load: "not-found".to_string(),
+                active: "failed".to_string(),
+                sub: "dead".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+        ];
+        sort_rows(&mut rows, false);
+        assert_eq!(rows[0].unit, "a.service");
+        assert_eq!(rows[1].unit, "z.service");
+    }
+
+    #[test]
     fn seed_logs_from_previous_preserves_known_logs_by_unit() {
         let previous = vec![UnitRow {
             dot: '●',
@@ -716,5 +937,22 @@ mod tests {
         let logs = parse_latest_logs_from_journal_json(output, &wanted);
         assert_eq!(logs.get("a.service").map(String::as_str), Some("newest a"));
         assert_eq!(logs.get("b.service").map(String::as_str), Some("newest b"));
+    }
+
+    #[test]
+    fn parses_latest_logs_ignores_invalid_lines_and_missing_fields() {
+        let output = r#"not-json
+{"_SYSTEMD_UNIT":"a.service"}
+{"MESSAGE":"no unit"}
+{"_SYSTEMD_UNIT":"a.service","MESSAGE":"ok"}"#;
+        let wanted = HashSet::from(["a.service".to_string()]);
+        let logs = parse_latest_logs_from_journal_json(output, &wanted);
+        assert_eq!(logs.get("a.service").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn latest_log_lines_batch_empty_input_returns_empty_map() {
+        let logs = latest_log_lines_batch(&[]);
+        assert!(logs.is_empty());
     }
 }

@@ -1,0 +1,38 @@
+# Copyright (c) 2026 l5yth
+# SPDX-License-Identifier: Apache-2.0
+
+pkgname=lsu-git
+pkgver=0.1.0.r0.g0000000
+pkgrel=1
+pkgdesc="Terminal UI for systemd services and latest journal lines"
+arch=('x86_64')
+url="https://github.com/l5yth/lsu"
+license=('Apache')
+depends=('systemd')
+makedepends=('cargo' 'git')
+source=("git+https://github.com/l5yth/lsu.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/lsu"
+  git describe --long --tags --abbrev=7 2>/dev/null \
+    | sed 's/^v//; s/-/.r/; s/-/./' \
+    || printf "0.0.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "${srcdir}/lsu"
+  cargo build --release --locked
+}
+
+check() {
+  cd "${srcdir}/lsu"
+  cargo test --all --all-features --locked
+}
+
+package() {
+  cd "${srcdir}/lsu"
+  install -Dm755 "target/release/lsu" "${pkgdir}/usr/bin/lsu"
+  install -Dm644 "LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

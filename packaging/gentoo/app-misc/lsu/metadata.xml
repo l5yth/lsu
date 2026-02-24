@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+  <maintainer type="person">
+    <email>l5yth@users.noreply.github.com</email>
+    <name>l5yth</name>
+  </maintainer>
+  <upstream>
+    <remote-id type="github">l5yth/lsu</remote-id>
+  </upstream>
+  <longdescription>
+    lsu is a terminal user interface for listing systemd service units and
+    showing the latest journal message for each service.
+  </longdescription>
+</pkgmetadata>

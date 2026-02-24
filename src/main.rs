@@ -49,6 +49,13 @@ struct Config {
     show_help: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LoadPhase {
+    Idle,
+    FetchingUnits,
+    FetchingLogs { next_idx: usize },
+}
+
 fn usage() -> &'static str {
     "Usage: lsu [OPTIONS]
 
@@ -140,12 +147,26 @@ fn fetch_services(show_all: bool) -> Result<Vec<SystemctlUnit>> {
     Ok(units)
 }
 
+/// Get the last journal line for one unit.
+fn last_log_line(unit: &str) -> Result<String> {
+    let mut cmd = Command::new("journalctl");
+    cmd.arg("-u")
+        .arg(unit)
+        .arg("-n")
+        .arg("1")
+        .arg("--no-pager")
+        .arg("-o")
+        .arg("cat");
+    let mut line = cmd_stdout(&mut cmd)?;
+    line = line.lines().next().unwrap_or("").trim().to_string();
+    Ok(line)
+}
+
 fn parse_latest_logs_from_journal_json(
     output: &str,
     wanted: &HashSet<String>,
 ) -> HashMap<String, String> {
     let mut latest = HashMap::new();
-
     for line in output.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -159,52 +180,51 @@ fn parse_latest_logs_from_journal_json(
             continue;
         }
 
-        let msg = value
+        let message = value
             .get("MESSAGE")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
             .to_string();
-
-        latest.insert(unit.to_string(), msg);
+        latest.insert(unit.to_string(), message);
 
         if latest.len() == wanted.len() {
             break;
         }
     }
-
     latest
 }
 
-/// Get latest journal message per unit in batches to avoid one process per unit.
-fn latest_log_lines(units: &[SystemctlUnit]) -> HashMap<String, String> {
-    const UNIT_BATCH_SIZE: usize = 128;
-    let unit_names: Vec<String> = units.iter().map(|u| u.unit.clone()).collect();
-    let mut all_latest = HashMap::new();
-
-    for batch in unit_names.chunks(UNIT_BATCH_SIZE) {
-        let wanted: HashSet<String> = batch.iter().cloned().collect();
-        let mut cmd = Command::new("journalctl");
-        cmd.arg("--no-pager")
-            .arg("-o")
-            .arg("json")
-            .arg("-r")
-            .arg("-n")
-            .arg(std::cmp::max(batch.len() * 20, 200).to_string());
-
-        for unit in batch {
-            cmd.arg("-u").arg(unit);
-        }
-
-        let Ok(output) = cmd_stdout(&mut cmd) else {
-            continue;
-        };
-
-        let latest = parse_latest_logs_from_journal_json(&output, &wanted);
-        all_latest.extend(latest);
+fn latest_log_lines_batch(unit_names: &[String]) -> HashMap<String, String> {
+    if unit_names.is_empty() {
+        return HashMap::new();
     }
 
-    all_latest
+    let wanted: HashSet<String> = unit_names.iter().cloned().collect();
+    let mut out = HashMap::new();
+    let mut cmd = Command::new("journalctl");
+    cmd.arg("--no-pager")
+        .arg("-o")
+        .arg("json")
+        .arg("-r")
+        .arg("-n")
+        .arg(std::cmp::max(unit_names.len() * 200, 1000).to_string());
+    for unit in unit_names {
+        cmd.arg("-u").arg(unit);
+    }
+
+    if let Ok(output) = cmd_stdout(&mut cmd) {
+        out = parse_latest_logs_from_journal_json(&output, &wanted);
+    }
+
+    // Ensure each requested unit has fresh data even if the batched query misses it.
+    for unit in unit_names {
+        if !out.contains_key(unit) {
+            out.insert(unit.clone(), last_log_line(unit).unwrap_or_default());
+        }
+    }
+
+    out
 }
 
 /// Choose dot + color based on active/sub.
@@ -245,25 +265,55 @@ fn sub_rank(sub: &str) -> u8 {
 }
 
 fn build_rows(units: Vec<SystemctlUnit>) -> Vec<UnitRow> {
-    let log_cache = latest_log_lines(&units);
-    let mut rows = Vec::with_capacity(units.len());
-    for u in units {
-        let (dot, dot_style) = status_dot(&u.active, &u.sub);
+    units
+        .into_iter()
+        .map(|u| {
+            let (dot, dot_style) = status_dot(&u.active, &u.sub);
+            UnitRow {
+                dot,
+                dot_style,
+                unit: u.unit,
+                load: u.load,
+                active: u.active,
+                sub: u.sub,
+                description: u.description,
+                last_log: String::new(),
+            }
+        })
+        .collect()
+}
 
-        let last_log = log_cache.get(&u.unit).cloned().unwrap_or_default();
-
-        rows.push(UnitRow {
-            dot,
-            dot_style,
-            unit: u.unit,
-            load: u.load,
-            active: u.active,
-            sub: u.sub,
-            description: u.description,
-            last_log,
+fn sort_rows(rows: &mut [UnitRow], show_all: bool) {
+    if show_all {
+        rows.sort_by(|a, b| {
+            (
+                load_rank(&a.load),
+                active_rank(&a.active),
+                sub_rank(&a.sub),
+                a.unit.as_str(),
+            )
+                .cmp(&(
+                    load_rank(&b.load),
+                    active_rank(&b.active),
+                    sub_rank(&b.sub),
+                    b.unit.as_str(),
+                ))
         });
+    } else {
+        rows.sort_by(|a, b| a.unit.cmp(&b.unit));
     }
-    rows
+}
+
+fn seed_logs_from_previous(new_rows: &mut [UnitRow], previous_rows: &[UnitRow]) {
+    let previous_logs: HashMap<&str, &str> = previous_rows
+        .iter()
+        .map(|r| (r.unit.as_str(), r.last_log.as_str()))
+        .collect();
+    for row in new_rows.iter_mut() {
+        if let Some(old_log) = previous_logs.get(row.unit.as_str()) {
+            row.last_log = (*old_log).to_string();
+        }
+    }
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -297,7 +347,8 @@ fn main() -> Result<()> {
         Some(Duration::from_secs(config.refresh_secs))
     };
     let mut last_refresh = Instant::now();
-    let mut force_refresh = true;
+    let mut refresh_requested = true;
+    let mut phase = LoadPhase::Idle;
 
     // state
     let mut rows: Vec<UnitRow> = Vec::new();
@@ -316,48 +367,11 @@ fn main() -> Result<()> {
 
     let res = (|| -> Result<()> {
         loop {
-            // refresh
             let auto_due = refresh_every
                 .map(|every| last_refresh.elapsed() >= every)
                 .unwrap_or(false);
-            if force_refresh || auto_due {
-                match fetch_services(config.show_all).map(|units| {
-                    let mut r = build_rows(units);
-                    if config.show_all {
-                        r.sort_by(|a, b| {
-                            (
-                                load_rank(&a.load),
-                                active_rank(&a.active),
-                                sub_rank(&a.sub),
-                                a.unit.as_str(),
-                            )
-                                .cmp(&(
-                                    load_rank(&b.load),
-                                    active_rank(&b.active),
-                                    sub_rank(&b.sub),
-                                    b.unit.as_str(),
-                                ))
-                        });
-                    } else {
-                        r.sort_by(|a, b| a.unit.cmp(&b.unit));
-                    }
-                    r
-                }) {
-                    Ok(r) => {
-                        rows = r;
-                        status_line = format!(
-                            "{mode_label}: {} | auto-refresh: {refresh_label} | q: quit | r: refresh",
-                            rows.len(),
-                        );
-                    }
-                    Err(e) => {
-                        status_line = format!(
-                            "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
-                        );
-                    }
-                }
-                last_refresh = Instant::now();
-                force_refresh = false;
+            if auto_due {
+                refresh_requested = true;
             }
 
             terminal.draw(|f| {
@@ -416,6 +430,79 @@ fn main() -> Result<()> {
                 f.render_widget(footer, chunks[1]);
             })?;
 
+            if refresh_requested {
+                phase = LoadPhase::FetchingUnits;
+                status_line = format!(
+                    "{mode_label}: loading units... | auto-refresh: {refresh_label} | q: quit | r: refresh"
+                );
+                refresh_requested = false;
+                last_refresh = Instant::now();
+            }
+
+            match phase {
+                LoadPhase::Idle => {}
+                LoadPhase::FetchingUnits => match fetch_services(config.show_all) {
+                    Ok(units) => {
+                        let previous_rows = rows.clone();
+                        let mut new_rows = build_rows(units);
+                        seed_logs_from_previous(&mut new_rows, &previous_rows);
+                        sort_rows(&mut new_rows, config.show_all);
+                        let row_count = new_rows.len();
+                        rows = new_rows;
+
+                        if rows.is_empty() {
+                            status_line = format!(
+                                "{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                            );
+                            phase = LoadPhase::Idle;
+                        } else {
+                            status_line = format!(
+                                "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                row_count, row_count,
+                            );
+                            phase = LoadPhase::FetchingLogs { next_idx: 0 };
+                        }
+                    }
+                    Err(e) => {
+                        status_line = format!(
+                            "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                        );
+                        phase = LoadPhase::Idle;
+                    }
+                },
+                LoadPhase::FetchingLogs { mut next_idx } => {
+                    const LOG_BATCH_SIZE: usize = 12;
+                    if next_idx < rows.len() {
+                        let end = std::cmp::min(next_idx + LOG_BATCH_SIZE, rows.len());
+                        let units: Vec<String> =
+                            rows[next_idx..end].iter().map(|r| r.unit.clone()).collect();
+                        let logs = latest_log_lines_batch(&units);
+                        for idx in next_idx..end {
+                            if let Some(log) = logs.get(rows[idx].unit.as_str()) {
+                                rows[idx].last_log = log.clone();
+                            }
+                        }
+                        next_idx = end;
+                    }
+
+                    if next_idx >= rows.len() {
+                        status_line = format!(
+                            "{mode_label}: {} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                            rows.len(),
+                        );
+                        phase = LoadPhase::Idle;
+                    } else {
+                        status_line = format!(
+                            "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                            rows.len(),
+                            next_idx,
+                            rows.len(),
+                        );
+                        phase = LoadPhase::FetchingLogs { next_idx };
+                    }
+                }
+            }
+
             // input
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(k) = event::read()? {
@@ -423,7 +510,7 @@ fn main() -> Result<()> {
                         match k.code {
                             KeyCode::Char('q') => break,
                             KeyCode::Char('r') => {
-                                force_refresh = true;
+                                refresh_requested = true;
                             }
                             _ => {}
                         }
@@ -536,6 +623,88 @@ mod tests {
         assert!(sub_rank("running") < sub_rank("exited"));
         assert!(sub_rank("exited") < sub_rank("dead"));
         assert!(sub_rank("dead") < sub_rank("auto-restart"));
+    }
+
+    #[test]
+    fn sort_rows_all_mode_respects_priority_order() {
+        let mut rows = vec![
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "z.service".to_string(),
+                load: "not-found".to_string(),
+                active: "inactive".to_string(),
+                sub: "dead".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "m.service".to_string(),
+                load: "masked".to_string(),
+                active: "failed".to_string(),
+                sub: "auto-restart".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+        ];
+
+        sort_rows(&mut rows, true);
+        assert_eq!(rows[0].unit, "a.service");
+        assert_eq!(rows[1].unit, "z.service");
+        assert_eq!(rows[2].unit, "m.service");
+    }
+
+    #[test]
+    fn seed_logs_from_previous_preserves_known_logs_by_unit() {
+        let previous = vec![UnitRow {
+            dot: '●',
+            dot_style: Style::default(),
+            unit: "a.service".to_string(),
+            load: "loaded".to_string(),
+            active: "active".to_string(),
+            sub: "running".to_string(),
+            description: String::new(),
+            last_log: "old message".to_string(),
+        }];
+
+        let mut new_rows = vec![
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "b.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+        ];
+
+        seed_logs_from_previous(&mut new_rows, &previous);
+        assert_eq!(new_rows[0].last_log, "old message");
+        assert_eq!(new_rows[1].last_log, "");
     }
 
     #[test]

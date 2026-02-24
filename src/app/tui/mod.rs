@@ -130,6 +130,7 @@ pub fn run() -> Result<()> {
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
 
     let mut rows: Vec<UnitRow> = Vec::new();
+    let mut row_index_by_unit: HashMap<String, usize> = HashMap::new();
     let mut selected_idx: usize = 0;
     let mut list_table_state = TableState::default();
     let mut view_mode = ViewMode::List;
@@ -266,6 +267,11 @@ pub fn run() -> Result<()> {
                         Ok(WorkerMsg::UnitsLoaded(new_rows)) => {
                             let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
                             rows = new_rows;
+                            row_index_by_unit = rows
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, row)| (row.unit.clone(), idx))
+                                .collect();
                             preserve_selection(previous_selected, &rows, &mut selected_idx);
                             if rows.is_empty() {
                                 status_line = format!(
@@ -282,11 +288,11 @@ pub fn run() -> Result<()> {
                             }
                         }
                         Ok(WorkerMsg::LogsProgress { done, total, logs }) => {
-                            let logs_map: HashMap<&str, &str> =
-                                logs.iter().map(|(u, l)| (u.as_str(), l.as_str())).collect();
-                            for row in &mut rows {
-                                if let Some(log) = logs_map.get(row.unit.as_str()) {
-                                    row.last_log = (*log).to_string();
+                            for (unit, log) in logs {
+                                if let Some(idx) = row_index_by_unit.get(&unit).copied()
+                                    && let Some(row) = rows.get_mut(idx)
+                                {
+                                    row.last_log = log;
                                 }
                             }
                             if done >= total {

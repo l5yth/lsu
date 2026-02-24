@@ -171,11 +171,15 @@ pub fn run() -> Result<()> {
                             let inner = block.inner(chunks[0]);
                             f.render_widget(block, chunks[0]);
 
-                            let empty_state = format!(
-                                "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
-                                config.load_filter, config.active_filter, config.sub_filter
-                            );
-                            let p = Paragraph::new(empty_state)
+                            let message = if matches!(phase, LoadPhase::Idle) {
+                                format!(
+                                    "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
+                                    config.load_filter, config.active_filter, config.sub_filter
+                                )
+                            } else {
+                                "Loading units and logs...".to_string()
+                            };
+                            let p = Paragraph::new(message)
                                 .alignment(Alignment::Center)
                                 .style(Style::default().fg(Color::DarkGray));
                             f.render_widget(p, inner);

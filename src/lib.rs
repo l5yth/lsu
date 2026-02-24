@@ -23,7 +23,5 @@ pub mod journal;
 pub mod rows;
 pub mod systemd;
 pub mod types;
-#[cfg(not(test))]
-pub mod ui;
 
 pub use app::run;

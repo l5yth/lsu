@@ -20,7 +20,10 @@
 //! focused on deterministic logic modules rather than terminal runtime I/O.
 
 #[cfg(not(test))]
-pub use crate::ui::run;
+pub mod tui;
+
+#[cfg(not(test))]
+pub use self::tui::run;
 
 #[cfg(test)]
 /// Test-only runner stub.

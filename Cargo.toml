@@ -1,0 +1,15 @@
+# Copyright (c) 2026 l5yth
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "lsu"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossterm = "0.27"
+ratatui = "0.26"

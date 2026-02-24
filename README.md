@@ -66,9 +66,9 @@ By default only loaded and active units are shown.
 
 Options:
   -a, --all            Shorthand for --load all --active all --sub all
-      --load <value>   Filter by load state (all, loaded, not-found, bad-setting, error, merged, masked)
+      --load <value>   Filter by load state (all, loaded, stub, not-found, bad-setting, error, merged, masked)
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
-      --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, reload, stop, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, cleaning)
+      --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -h, --help           Show this help text
 ```

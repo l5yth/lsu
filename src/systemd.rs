@@ -38,7 +38,9 @@ pub fn is_full_all(cfg: &Config) -> bool {
 
 /// Whether the query must fetch the full set instead of `--state=running`.
 pub fn should_fetch_all(cfg: &Config) -> bool {
-    !(cfg.load_filter == "all" && cfg.active_filter == "active" && cfg.sub_filter == "running")
+    !((cfg.load_filter == "all" || cfg.load_filter == "loaded")
+        && cfg.active_filter == "active"
+        && cfg.sub_filter == "running")
 }
 
 /// Query service units via `systemctl` JSON output.
@@ -182,6 +184,12 @@ mod tests {
             show_help: false,
         };
         assert!(!should_fetch_all(&default_cfg));
+
+        let loaded_default = Config {
+            load_filter: "loaded".to_string(),
+            ..default_cfg.clone()
+        };
+        assert!(!should_fetch_all(&loaded_default));
 
         let sub_all = Config {
             sub_filter: "all".to_string(),

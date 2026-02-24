@@ -33,6 +33,7 @@ pub struct Config {
 enum LoadFilter {
     All,
     Loaded,
+    Stub,
     NotFound,
     BadSetting,
     Error,
@@ -45,6 +46,7 @@ impl LoadFilter {
         match self {
             Self::All => "all",
             Self::Loaded => "loaded",
+            Self::Stub => "stub",
             Self::NotFound => "not-found",
             Self::BadSetting => "bad-setting",
             Self::Error => "error",
@@ -54,7 +56,7 @@ impl LoadFilter {
     }
 
     fn allowed_values() -> &'static str {
-        "all, loaded, not-found, bad-setting, error, merged, masked"
+        "all, loaded, stub, not-found, bad-setting, error, merged, masked"
     }
 }
 
@@ -65,6 +67,7 @@ impl FromStr for LoadFilter {
         match s {
             "all" => Ok(Self::All),
             "loaded" => Ok(Self::Loaded),
+            "stub" => Ok(Self::Stub),
             "not-found" => Ok(Self::NotFound),
             "bad-setting" => Ok(Self::BadSetting),
             "error" => Ok(Self::Error),
@@ -144,13 +147,21 @@ enum SubFilter {
     Start,
     StartPost,
     AutoRestart,
+    AutoRestartQueued,
+    DeadBeforeAutoRestart,
+    Condition,
     Reload,
+    ReloadPost,
+    ReloadSignal,
+    ReloadNotify,
     Stop,
+    StopWatchdog,
     StopSigterm,
     StopSigkill,
     StopPost,
     FinalSigterm,
     FinalSigkill,
+    FinalWatchdog,
     Cleaning,
 }
 
@@ -166,19 +177,27 @@ impl SubFilter {
             Self::Start => "start",
             Self::StartPost => "start-post",
             Self::AutoRestart => "auto-restart",
+            Self::AutoRestartQueued => "auto-restart-queued",
+            Self::DeadBeforeAutoRestart => "dead-before-auto-restart",
+            Self::Condition => "condition",
             Self::Reload => "reload",
+            Self::ReloadPost => "reload-post",
+            Self::ReloadSignal => "reload-signal",
+            Self::ReloadNotify => "reload-notify",
             Self::Stop => "stop",
+            Self::StopWatchdog => "stop-watchdog",
             Self::StopSigterm => "stop-sigterm",
             Self::StopSigkill => "stop-sigkill",
             Self::StopPost => "stop-post",
             Self::FinalSigterm => "final-sigterm",
             Self::FinalSigkill => "final-sigkill",
+            Self::FinalWatchdog => "final-watchdog",
             Self::Cleaning => "cleaning",
         }
     }
 
     fn allowed_values() -> &'static str {
-        "all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, reload, stop, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, cleaning"
+        "all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning"
     }
 }
 
@@ -196,13 +215,21 @@ impl FromStr for SubFilter {
             "start" => Ok(Self::Start),
             "start-post" => Ok(Self::StartPost),
             "auto-restart" => Ok(Self::AutoRestart),
+            "auto-restart-queued" => Ok(Self::AutoRestartQueued),
+            "dead-before-auto-restart" => Ok(Self::DeadBeforeAutoRestart),
+            "condition" => Ok(Self::Condition),
             "reload" => Ok(Self::Reload),
+            "reload-post" => Ok(Self::ReloadPost),
+            "reload-signal" => Ok(Self::ReloadSignal),
+            "reload-notify" => Ok(Self::ReloadNotify),
             "stop" => Ok(Self::Stop),
+            "stop-watchdog" => Ok(Self::StopWatchdog),
             "stop-sigterm" => Ok(Self::StopSigterm),
             "stop-sigkill" => Ok(Self::StopSigkill),
             "stop-post" => Ok(Self::StopPost),
             "final-sigterm" => Ok(Self::FinalSigterm),
             "final-sigkill" => Ok(Self::FinalSigkill),
+            "final-watchdog" => Ok(Self::FinalWatchdog),
             "cleaning" => Ok(Self::Cleaning),
             _ => Err(anyhow!(
                 "invalid --sub value: {s}; allowed: {}",
@@ -221,9 +248,9 @@ By default only loaded and active units are shown.
 
 Options:
   -a, --all            Shorthand for --load all --active all --sub all
-      --load <value>   Filter by load state (all, loaded, not-found, bad-setting, error, merged, masked)
+      --load <value>   Filter by load state (all, loaded, stub, not-found, bad-setting, error, merged, masked)
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
-      --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, reload, stop, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, cleaning)
+      --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -h, --help           Show this help text"
 }
@@ -459,5 +486,107 @@ mod tests {
 
         let err = parse_args(vec!["lsu", "--sub", "bogus"]).expect_err("invalid sub");
         assert!(err.to_string().contains("invalid --sub value"));
+    }
+
+    #[test]
+    fn parse_args_accepts_stub_load_state() {
+        let cfg = parse_args(vec!["lsu", "--load", "stub"]).expect("stub should parse");
+        assert_eq!(cfg.load_filter, "stub");
+        assert_eq!(cfg.active_filter, "all");
+        assert_eq!(cfg.sub_filter, "all");
+    }
+
+    #[test]
+    fn parse_args_accepts_extended_service_substates() {
+        let cfg = parse_args(vec!["lsu", "--sub", "condition"]).expect("condition should parse");
+        assert_eq!(cfg.sub_filter, "condition");
+
+        let cfg =
+            parse_args(vec!["lsu", "--sub", "reload-post"]).expect("reload-post should parse");
+        assert_eq!(cfg.sub_filter, "reload-post");
+
+        let cfg = parse_args(vec!["lsu", "--sub", "dead-before-auto-restart"])
+            .expect("dead-before-auto-restart should parse");
+        assert_eq!(cfg.sub_filter, "dead-before-auto-restart");
+
+        let cfg = parse_args(vec!["lsu", "--sub", "auto-restart-queued"])
+            .expect("auto-restart-queued should parse");
+        assert_eq!(cfg.sub_filter, "auto-restart-queued");
+    }
+
+    #[test]
+    fn parse_args_accepts_all_load_values() {
+        for value in [
+            "all",
+            "loaded",
+            "stub",
+            "not-found",
+            "bad-setting",
+            "error",
+            "merged",
+            "masked",
+        ] {
+            let cfg = parse_args(vec!["lsu", "--load", value]).expect("load should parse");
+            assert_eq!(cfg.load_filter, value);
+        }
+    }
+
+    #[test]
+    fn parse_args_accepts_all_active_values() {
+        for value in [
+            "all",
+            "active",
+            "reloading",
+            "inactive",
+            "failed",
+            "activating",
+            "deactivating",
+            "maintenance",
+            "refreshing",
+        ] {
+            let cfg = parse_args(vec!["lsu", "--active", value]).expect("active should parse");
+            assert_eq!(cfg.active_filter, value);
+        }
+    }
+
+    #[test]
+    fn parse_args_accepts_all_sub_values() {
+        for value in [
+            "all",
+            "running",
+            "exited",
+            "dead",
+            "failed",
+            "start-pre",
+            "start",
+            "start-post",
+            "auto-restart",
+            "auto-restart-queued",
+            "dead-before-auto-restart",
+            "condition",
+            "reload",
+            "reload-post",
+            "reload-signal",
+            "reload-notify",
+            "stop",
+            "stop-watchdog",
+            "stop-sigterm",
+            "stop-sigkill",
+            "stop-post",
+            "final-sigterm",
+            "final-sigkill",
+            "final-watchdog",
+            "cleaning",
+        ] {
+            let cfg = parse_args(vec!["lsu", "--sub", value]).expect("sub should parse");
+            assert_eq!(cfg.sub_filter, value);
+        }
+    }
+
+    #[test]
+    fn parse_args_rejects_all_mixed_with_equals_filters() {
+        let err = parse_args(vec!["lsu", "--all", "--sub=running"])
+            .expect_err("must reject mixed all/equal filter");
+        assert!(err.to_string().contains("--all cannot be combined"));
     }
 }

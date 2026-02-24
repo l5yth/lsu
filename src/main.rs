@@ -9,7 +9,7 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
 };
 use serde::Deserialize;
 use std::{
@@ -43,6 +43,12 @@ struct UnitRow {
 }
 
 #[derive(Debug, Clone)]
+struct DetailLogEntry {
+    time: String,
+    log: String,
+}
+
+#[derive(Debug, Clone)]
 struct Config {
     load_filter: String,
     active_filter: String,
@@ -56,6 +62,12 @@ enum LoadPhase {
     Idle,
     FetchingUnits,
     FetchingLogs { next_idx: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ViewMode {
+    List,
+    Detail,
 }
 
 fn usage() -> &'static str {
@@ -221,6 +233,43 @@ fn last_log_line(unit: &str) -> Result<String> {
     Ok(line)
 }
 
+fn parse_journal_short_iso(output: &str) -> Vec<DetailLogEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Some((time, log)) = trimmed.split_once(' ') {
+                Some(DetailLogEntry {
+                    time: time.to_string(),
+                    log: log.trim_start().to_string(),
+                })
+            } else {
+                Some(DetailLogEntry {
+                    time: String::new(),
+                    log: trimmed.to_string(),
+                })
+            }
+        })
+        .collect()
+}
+
+fn fetch_unit_logs(unit: &str, max_lines: usize) -> Result<Vec<DetailLogEntry>> {
+    let mut cmd = Command::new("journalctl");
+    cmd.arg("-u")
+        .arg(unit)
+        .arg("-n")
+        .arg(max_lines.to_string())
+        .arg("--no-pager")
+        .arg("-o")
+        .arg("short-iso")
+        .arg("-r");
+    let output = cmd_stdout(&mut cmd)?;
+    Ok(parse_journal_short_iso(&output))
+}
+
 fn parse_latest_logs_from_journal_json(
     output: &str,
     wanted: &HashSet<String>,
@@ -375,6 +424,22 @@ fn seed_logs_from_previous(new_rows: &mut [UnitRow], previous_rows: &[UnitRow]) 
     }
 }
 
+fn preserve_selection(prev_unit: Option<String>, rows: &[UnitRow], selected_idx: &mut usize) {
+    if rows.is_empty() {
+        *selected_idx = 0;
+        return;
+    }
+    if let Some(unit) = prev_unit
+        && let Some(idx) = rows.iter().position(|r| r.unit == unit)
+    {
+        *selected_idx = idx;
+        return;
+    }
+    if *selected_idx >= rows.len() {
+        *selected_idx = rows.len().saturating_sub(1);
+    }
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode().context("enable_raw_mode failed")?;
     let mut stdout = io::stdout();
@@ -411,14 +476,21 @@ fn main() -> Result<()> {
 
     // state
     let mut rows: Vec<UnitRow> = Vec::new();
+    let mut selected_idx: usize = 0;
+    let mut list_table_state = TableState::default();
+    let mut view_mode = ViewMode::List;
+    let mut detail_unit = String::new();
+    let mut detail_logs: Vec<DetailLogEntry> = Vec::new();
+    let mut detail_scroll: usize = 0;
     let mode_label = "services";
     let refresh_label = if config.refresh_secs == 0 {
         "off".to_string()
     } else {
         format!("{}s", config.refresh_secs)
     };
-    let mut status_line =
-        format!("{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh");
+    let mut status_line = format!(
+        "{mode_label}: 0 | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+    );
 
     let res = (|| -> Result<()> {
         loop {
@@ -435,60 +507,98 @@ fn main() -> Result<()> {
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Min(1), Constraint::Length(1)])
                     .split(size);
+                match view_mode {
+                    ViewMode::List => {
+                        let header = Row::new([
+                            Cell::from(" "),
+                            Cell::from("unit"),
+                            Cell::from("load"),
+                            Cell::from("active"),
+                            Cell::from("sub"),
+                            Cell::from("description"),
+                            Cell::from("log (last line)"),
+                        ])
+                        .style(Style::default().add_modifier(Modifier::BOLD));
 
-                let header = Row::new([
-                    Cell::from(" "),
-                    Cell::from("unit"),
-                    Cell::from("load"),
-                    Cell::from("active"),
-                    Cell::from("sub"),
-                    Cell::from("description"),
-                    Cell::from("log (last line)"),
-                ])
-                .style(Style::default().add_modifier(Modifier::BOLD));
+                        let table_rows = rows.iter().map(|r| {
+                            Row::new([
+                                Cell::from(r.dot.to_string()).style(r.dot_style),
+                                Cell::from(r.unit.clone()),
+                                Cell::from(r.load.clone()),
+                                Cell::from(r.active.clone()),
+                                Cell::from(r.sub.clone()),
+                                Cell::from(r.description.clone()),
+                                Cell::from(r.last_log.clone()),
+                            ])
+                        });
 
-                let table_rows = rows.iter().map(|r| {
-                    Row::new([
-                        Cell::from(r.dot.to_string()).style(r.dot_style),
-                        Cell::from(r.unit.clone()),
-                        Cell::from(r.load.clone()),
-                        Cell::from(r.active.clone()),
-                        Cell::from(r.sub.clone()),
-                        Cell::from(r.description.clone()),
-                        Cell::from(r.last_log.clone()),
-                    ])
-                });
+                        let widths = [
+                            Constraint::Length(2),
+                            Constraint::Length(38),
+                            Constraint::Length(8),
+                            Constraint::Length(10),
+                            Constraint::Length(12),
+                            Constraint::Length(36),
+                            Constraint::Min(20),
+                        ];
 
-                let widths = [
-                    Constraint::Length(2),
-                    Constraint::Length(38),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
-                    Constraint::Length(12),
-                    Constraint::Length(36),
-                    Constraint::Min(20),
-                ];
+                        list_table_state.select((!rows.is_empty()).then_some(selected_idx));
+                        let t = Table::new(table_rows, widths)
+                            .header(header)
+                            .block(
+                                Block::default()
+                                    .borders(Borders::ALL)
+                                    .title(format!("systemd {mode_label}")),
+                            )
+                            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                            .column_spacing(1);
 
-                let t = Table::new(table_rows, widths)
-                    .header(header)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .title(format!("systemd {mode_label}")),
-                    )
-                    .column_spacing(1);
+                        f.render_stateful_widget(t, chunks[0], &mut list_table_state);
 
-                f.render_widget(t, chunks[0]);
+                        let footer = Paragraph::new(status_line.clone())
+                            .style(Style::default().fg(Color::DarkGray));
+                        f.render_widget(footer, chunks[1]);
+                    }
+                    ViewMode::Detail => {
+                        let unit_meta = rows
+                            .iter()
+                            .find(|r| r.unit == detail_unit)
+                            .map(|r| format!("unit: {}", r.unit))
+                            .unwrap_or_else(|| format!("unit: {}", detail_unit));
 
-                let footer =
-                    Paragraph::new(status_line.clone()).style(Style::default().fg(Color::DarkGray));
-                f.render_widget(footer, chunks[1]);
+                        let header = Row::new([Cell::from("time"), Cell::from("log")])
+                            .style(Style::default().add_modifier(Modifier::BOLD));
+                        let log_rows = detail_logs
+                            .iter()
+                            .skip(detail_scroll)
+                            .map(|entry| Row::new([entry.time.clone(), entry.log.clone()]));
+
+                        let table =
+                            Table::new(log_rows, [Constraint::Length(25), Constraint::Min(20)])
+                                .header(header)
+                                .block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title(format!("logs for {}", detail_unit)),
+                                )
+                                .column_spacing(1);
+                        f.render_widget(table, chunks[0]);
+
+                        let footer = Paragraph::new(format!(
+                            "{} | logs: {} | ↑/↓: scroll | b/esc: back | q: quit | r: refresh",
+                            unit_meta,
+                            detail_logs.len()
+                        ))
+                        .style(Style::default().fg(Color::DarkGray));
+                        f.render_widget(footer, chunks[1]);
+                    }
+                }
             })?;
 
             if refresh_requested && matches!(phase, LoadPhase::Idle) {
                 phase = LoadPhase::FetchingUnits;
                 status_line = format!(
-                    "{mode_label}: loading units... | auto-refresh: {refresh_label} | q: quit | r: refresh"
+                    "{mode_label}: loading units... | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
                 );
                 refresh_requested = false;
                 last_refresh = Instant::now();
@@ -500,21 +610,23 @@ fn main() -> Result<()> {
                     let fetch_all = should_fetch_all(&config);
                     match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
                         Ok(units) => {
+                            let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
                             let previous_rows = rows.clone();
                             let mut new_rows = build_rows(units);
                             seed_logs_from_previous(&mut new_rows, &previous_rows);
                             sort_rows(&mut new_rows, is_full_all(&config));
                             let row_count = new_rows.len();
                             rows = new_rows;
+                            preserve_selection(previous_selected, &rows, &mut selected_idx);
 
                             if rows.is_empty() {
                                 status_line = format!(
-                                    "{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                    "{mode_label}: 0 | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                 );
                                 phase = LoadPhase::Idle;
                             } else {
                                 status_line = format!(
-                                    "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                    "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                     row_count, row_count,
                                 );
                                 phase = LoadPhase::FetchingLogs { next_idx: 0 };
@@ -545,13 +657,13 @@ fn main() -> Result<()> {
 
                     if next_idx >= rows.len() {
                         status_line = format!(
-                            "{mode_label}: {} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                            "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                             rows.len(),
                         );
                         phase = LoadPhase::Idle;
                     } else {
                         status_line = format!(
-                            "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                            "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                             rows.len(),
                             next_idx,
                             rows.len(),
@@ -566,12 +678,57 @@ fn main() -> Result<()> {
                 && let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
             {
-                match k.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => {
-                        refresh_requested = true;
-                    }
-                    _ => {}
+                match view_mode {
+                    ViewMode::List => match k.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('r') => {
+                            refresh_requested = true;
+                        }
+                        KeyCode::Down => {
+                            if !rows.is_empty() {
+                                selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
+                            }
+                        }
+                        KeyCode::Up => {
+                            selected_idx = selected_idx.saturating_sub(1);
+                        }
+                        KeyCode::Char('l') | KeyCode::Enter => {
+                            if let Some(row) = rows.get(selected_idx) {
+                                detail_unit = row.unit.clone();
+                                detail_logs =
+                                    fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
+                                detail_scroll = 0;
+                                view_mode = ViewMode::Detail;
+                            }
+                        }
+                        _ => {}
+                    },
+                    ViewMode::Detail => match k.code {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Char('r') => {
+                            refresh_requested = true;
+                            detail_logs = fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
+                            detail_scroll = 0;
+                        }
+                        KeyCode::Down => {
+                            if !detail_logs.is_empty() {
+                                detail_scroll =
+                                    std::cmp::min(detail_scroll + 1, detail_logs.len() - 1);
+                            }
+                        }
+                        KeyCode::Up => {
+                            detail_scroll = detail_scroll.saturating_sub(1);
+                        }
+                        KeyCode::Esc | KeyCode::Char('b') => {
+                            view_mode = ViewMode::List;
+                        }
+                        KeyCode::Char('l') => {
+                            // reload detail logs
+                            detail_logs = fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
+                            detail_scroll = 0;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -954,5 +1111,45 @@ mod tests {
     fn latest_log_lines_batch_empty_input_returns_empty_map() {
         let logs = latest_log_lines_batch(&[]);
         assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn parse_journal_short_iso_extracts_time_and_message() {
+        let out = "2026-02-24T10:00:00+0000 one log line\nraw-without-timestamp";
+        let rows = parse_journal_short_iso(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].time, "2026-02-24T10:00:00+0000");
+        assert_eq!(rows[0].log, "one log line");
+        assert_eq!(rows[1].time, "");
+        assert_eq!(rows[1].log, "raw-without-timestamp");
+    }
+
+    #[test]
+    fn preserve_selection_keeps_same_unit_after_reorder() {
+        let rows = vec![
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+            UnitRow {
+                dot: '●',
+                dot_style: Style::default(),
+                unit: "b.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: String::new(),
+                last_log: String::new(),
+            },
+        ];
+        let mut idx = 0;
+        preserve_selection(Some("b.service".to_string()), &rows, &mut idx);
+        assert_eq!(idx, 1);
     }
 }

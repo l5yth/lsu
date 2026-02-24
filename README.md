@@ -63,7 +63,6 @@ Usage: lsu [OPTIONS]
 
 Show systemd services in a terminal UI.
 By default only loaded and active units are shown.
-If any of --load/--active/--sub is provided, omitted filter flags default to all.
 
 Options:
   -a, --all            Shorthand for --load all --active all --sub all

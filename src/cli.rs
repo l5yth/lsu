@@ -424,6 +424,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_rejects_missing_refresh_values() {
+        let err = parse_args(vec!["lsu", "--refresh"]).expect_err("missing --refresh value");
+        assert!(err.to_string().contains("missing value for --refresh"));
+
+        let err = parse_args(vec!["lsu", "-r"]).expect_err("missing -r value");
+        assert!(err.to_string().contains("missing value for -r"));
+    }
+
+    #[test]
     fn parse_args_rejects_invalid_refresh_value() {
         let err = parse_args(vec!["lsu", "--refresh", "abc"]).expect_err("invalid refresh");
         assert!(err.to_string().contains("invalid refresh value"));
@@ -486,6 +495,24 @@ mod tests {
 
         let err = parse_args(vec!["lsu", "--sub", "bogus"]).expect_err("invalid sub");
         assert!(err.to_string().contains("invalid --sub value"));
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_filter_values_in_equals_forms() {
+        let err = parse_args(vec!["lsu", "--load=bogus"]).expect_err("invalid load");
+        assert!(err.to_string().contains("invalid --load value"));
+
+        let err = parse_args(vec!["lsu", "--active=bogus"]).expect_err("invalid active");
+        assert!(err.to_string().contains("invalid --active value"));
+
+        let err = parse_args(vec!["lsu", "--sub=bogus"]).expect_err("invalid sub");
+        assert!(err.to_string().contains("invalid --sub value"));
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_refresh_value_in_equals_form() {
+        let err = parse_args(vec!["lsu", "--refresh=abc"]).expect_err("invalid refresh");
+        assert!(err.to_string().contains("invalid refresh value"));
     }
 
     #[test]

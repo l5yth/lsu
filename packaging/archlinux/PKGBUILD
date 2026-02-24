@@ -16,9 +16,13 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "${srcdir}/lsu"
-  git describe --long --tags --abbrev=7 2>/dev/null \
-    | sed 's/^v//; s/-/.r/; s/-/./' \
-    || printf "0.0.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  local desc
+  desc="$(git describe --long --tags --abbrev=7 2>/dev/null || true)"
+  if [[ -n "${desc}" ]]; then
+    printf '%s\n' "${desc}" | sed 's/^v//; s/-/.r/; s/-/./'
+  else
+    printf "0.0.0.r%s.g%s\n" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  fi
 }
 
 build() {

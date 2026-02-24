@@ -226,7 +226,16 @@ fn stream_batch_latest_logs(
     let mut found = HashMap::new();
     let mut seen_lines = 0usize;
     while seen_lines < line_budget && found.len() < wanted.len() {
-        let timeout = remaining_timeout(deadline)?;
+        let timeout = match remaining_timeout(deadline) {
+            Ok(timeout) => timeout,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = read_handle.join();
+                let _ = stderr_handle.join();
+                return Err(e);
+            }
+        };
         match line_rx.recv_timeout(timeout) {
             Ok(line) => {
                 absorb_latest_log_line(&line, &wanted, &mut found);

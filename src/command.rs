@@ -214,8 +214,8 @@ fn resolve_trusted_binary_in(
         if !is_executable(&candidate) {
             continue;
         }
-        if is_under_trusted_roots(&candidate, &trusted_roots) {
-            return Ok(candidate);
+        if let Some(canonical) = canonical_trusted_candidate(&candidate, &trusted_roots) {
+            return Ok(canonical);
         }
     }
 
@@ -233,17 +233,17 @@ fn canonical_trusted_roots(trusted_dirs: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-fn is_under_trusted_roots(candidate: &Path, trusted_roots: &[PathBuf]) -> bool {
+fn canonical_trusted_candidate(candidate: &Path, trusted_roots: &[PathBuf]) -> Option<PathBuf> {
     let Ok(canon) = candidate.canonicalize() else {
-        return false;
+        return None;
     };
-    let Some(file_name) = canon.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    let Some(requested) = candidate.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    trusted_roots.iter().any(|root| canon.starts_with(root)) && file_name == requested
+    let file_name = canon.file_name().and_then(|n| n.to_str())?;
+    let requested = candidate.file_name().and_then(|n| n.to_str())?;
+    if trusted_roots.iter().any(|root| canon.starts_with(root)) && file_name == requested {
+        Some(canon)
+    } else {
+        None
+    }
 }
 
 #[cfg(unix)]
@@ -527,6 +527,31 @@ mod tests {
         .expect_err("symlink to wrong binary name must be rejected");
         assert!(err.to_string().contains("trusted 'systemctl' not found"));
 
+        let _ = fs::remove_dir_all(trusted);
+        let _ = fs::remove_dir_all(untrusted);
+    }
+
+    #[test]
+    fn resolve_trusted_binary_returns_canonical_path_for_symlink_candidate() {
+        #[cfg(not(unix))]
+        {
+            return;
+        }
+        let trusted = unique_temp_dir("trusted-systemctl-target");
+        let untrusted = unique_temp_dir("untrusted-systemctl-link");
+        let target = trusted.join("systemctl");
+        make_exec(&target);
+        let link = untrusted.join("systemctl");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink should be created");
+
+        let resolved = resolve_trusted_binary_in(
+            "systemctl",
+            Some(OsStr::new(untrusted.to_string_lossy().as_ref()).to_owned()),
+            std::slice::from_ref(&trusted),
+        )
+        .expect("symlink to trusted same-name binary should resolve");
+
+        assert_eq!(resolved, target.canonicalize().expect("canonical target"));
         let _ = fs::remove_dir_all(trusted);
         let _ = fs::remove_dir_all(untrusted);
     }

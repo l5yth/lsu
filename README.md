@@ -59,6 +59,9 @@ cargo run --release --
 ## Usage
 
 ```text
+lsu v0.1.1
+apache v2 (c) 2026 l5yth
+
 Usage: lsu [OPTIONS]
 
 Show systemd services in a terminal UI.
@@ -71,6 +74,7 @@ Options:
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -h, --help           Show this help text
+  -v, --version        Show version and copyright
 ```
 
 Examples:

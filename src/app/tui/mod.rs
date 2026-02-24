@@ -164,51 +164,70 @@ pub fn run() -> Result<()> {
                     .split(size);
                 match view_mode {
                     ViewMode::List => {
-                        let header = Row::new([
-                            Cell::from(" "),
-                            Cell::from("unit"),
-                            Cell::from("load"),
-                            Cell::from("active"),
-                            Cell::from("sub"),
-                            Cell::from("description"),
-                            Cell::from("log (last line)"),
-                        ])
-                        .style(Style::default().add_modifier(Modifier::BOLD));
+                        if rows.is_empty() {
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!("systemd {mode_label}"));
+                            let inner = block.inner(chunks[0]);
+                            f.render_widget(block, chunks[0]);
 
-                        let table_rows = rows.iter().map(|r| {
-                            Row::new([
-                                Cell::from(r.dot.to_string()).style(r.dot_style),
-                                Cell::from(r.unit.clone()),
-                                Cell::from(r.load.clone()),
-                                Cell::from(r.active.clone()),
-                                Cell::from(r.sub.clone()),
-                                Cell::from(r.description.clone()),
-                                Cell::from(r.last_log.clone()),
+                            let empty_state = format!(
+                                "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
+                                config.load_filter, config.active_filter, config.sub_filter
+                            );
+                            let p = Paragraph::new(empty_state)
+                                .alignment(Alignment::Center)
+                                .style(Style::default().fg(Color::DarkGray));
+                            f.render_widget(p, inner);
+                        } else {
+                            let header = Row::new([
+                                Cell::from(" "),
+                                Cell::from("unit"),
+                                Cell::from("load"),
+                                Cell::from("active"),
+                                Cell::from("sub"),
+                                Cell::from("description"),
+                                Cell::from("log (last line)"),
                             ])
-                        });
+                            .style(Style::default().add_modifier(Modifier::BOLD));
 
-                        let widths = [
-                            Constraint::Length(2),
-                            Constraint::Length(38),
-                            Constraint::Length(8),
-                            Constraint::Length(10),
-                            Constraint::Length(12),
-                            Constraint::Length(36),
-                            Constraint::Min(20),
-                        ];
+                            let table_rows = rows.iter().map(|r| {
+                                Row::new([
+                                    Cell::from(r.dot.to_string()).style(r.dot_style),
+                                    Cell::from(r.unit.clone()),
+                                    Cell::from(r.load.clone()),
+                                    Cell::from(r.active.clone()),
+                                    Cell::from(r.sub.clone()),
+                                    Cell::from(r.description.clone()),
+                                    Cell::from(r.last_log.clone()),
+                                ])
+                            });
 
-                        list_table_state.select((!rows.is_empty()).then_some(selected_idx));
-                        let t = Table::new(table_rows, widths)
-                            .header(header)
-                            .block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .title(format!("systemd {mode_label}")),
-                            )
-                            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-                            .column_spacing(1);
+                            let widths = [
+                                Constraint::Length(2),
+                                Constraint::Length(38),
+                                Constraint::Length(8),
+                                Constraint::Length(10),
+                                Constraint::Length(12),
+                                Constraint::Length(36),
+                                Constraint::Min(20),
+                            ];
 
-                        f.render_stateful_widget(t, chunks[0], &mut list_table_state);
+                            list_table_state.select((!rows.is_empty()).then_some(selected_idx));
+                            let t = Table::new(table_rows, widths)
+                                .header(header)
+                                .block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title(format!("systemd {mode_label}")),
+                                )
+                                .row_highlight_style(
+                                    Style::default().add_modifier(Modifier::REVERSED),
+                                )
+                                .column_spacing(1);
+
+                            f.render_stateful_widget(t, chunks[0], &mut list_table_state);
+                        }
 
                         let footer = Paragraph::new(status_line.clone())
                             .style(Style::default().fg(Color::DarkGray));

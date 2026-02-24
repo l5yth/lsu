@@ -1,0 +1,87 @@
+# Copyright (c) 2026 l5yth
+# SPDX-License-Identifier: Apache-2.0
+
+name: Linux Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  archlinux-package:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git sudo rust
+
+      - name: Build and install AUR package
+        run: |
+          useradd -m builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder "${GITHUB_WORKSPACE}"
+          su - builder -c "cd '${GITHUB_WORKSPACE}/packaging/archlinux' && sed -i \"s|^source=.*$|source=(\\\"lsu::git+https://github.com/${GITHUB_REPOSITORY}.git#commit=${GITHUB_SHA}\\\")|\" PKGBUILD && makepkg --syncdeps --noconfirm --cleanbuild --clean --install"
+
+  gentoo-ebuild:
+    runs-on: ubuntu-latest
+    container:
+      image: gentoo/stage3:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bootstrap Gentoo repo and profile
+        run: |
+          mkdir -p /etc/portage/repos.conf
+          cat > /etc/portage/repos.conf/gentoo.conf <<'EOF'
+          [gentoo]
+          location = /var/db/repos/gentoo
+          sync-type = rsync
+          sync-uri = rsync://rsync.gentoo.org/gentoo-portage
+          auto-sync = yes
+          EOF
+
+          mkdir -p /var/db/repos/gentoo
+          emerge --sync --quiet
+
+          if [ ! -L /etc/portage/make.profile ]; then
+            profile_path="$(find /var/db/repos/gentoo/profiles/default/linux/amd64 -type f -name make.defaults | head -n1)"
+            if [ -n "${profile_path}" ]; then
+              ln -snf "$(dirname "${profile_path}")" /etc/portage/make.profile
+            fi
+          fi
+
+      - name: Configure local overlay
+        run: |
+          mkdir -p /var/db/repos/localrepo/{metadata,profiles,app-misc/lsu}
+          cp "${GITHUB_WORKSPACE}/packaging/gentoo/app-misc/lsu/lsu-9999.ebuild" /var/db/repos/localrepo/app-misc/lsu/
+          cp "${GITHUB_WORKSPACE}/packaging/gentoo/app-misc/lsu/metadata.xml" /var/db/repos/localrepo/app-misc/lsu/
+          printf "localrepo\n" > /var/db/repos/localrepo/profiles/repo_name
+          cat > /var/db/repos/localrepo/metadata/layout.conf <<'EOF'
+          masters = gentoo
+          auto-sync = no
+          EOF
+          mkdir -p /etc/portage/repos.conf
+          cat > /etc/portage/repos.conf/localrepo.conf <<'EOF'
+          [localrepo]
+          location = /var/db/repos/localrepo
+          masters = gentoo
+          auto-sync = no
+          EOF
+          mkdir -p /etc/portage/package.accept_keywords
+          printf "=app-misc/lsu-9999 **\n" > /etc/portage/package.accept_keywords/localrepo
+
+      - name: Validate ebuild and resolve install plan
+        run: |
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild manifest
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            emerge -pv =app-misc/lsu-9999

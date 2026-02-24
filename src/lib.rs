@@ -14,24 +14,16 @@
    limitations under the License.
 */
 
-//! Binary entry point for `lsu`.
+//! Library entry point for the `lsu` crate.
 
-/// Launch the application.
-fn main() -> anyhow::Result<()> {
-    #[cfg(test)]
-    {
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        lsu::run()
-    }
-}
+pub mod app;
+pub mod cli;
+pub mod command;
+pub mod journal;
+pub mod rows;
+pub mod systemd;
+pub mod types;
+#[cfg(not(test))]
+pub mod ui;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn main_returns_ok_in_test_mode() {
-        assert!(super::main().is_ok());
-    }
-}
+pub use app::run;

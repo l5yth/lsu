@@ -3,7 +3,7 @@
 
 # lsu
 
-`lsu` is a Rust terminal UI for viewing `systemd` service units and their logs.
+`lsu` is a Rust terminal UI for viewing `systemd` service units and their journal.
 
 ![lsu terminal UI screenshot](assets/images/lsu-tui-overview.png)
 
@@ -16,6 +16,9 @@
 Core crates: `ratatui`, `crossterm`, `serde`, `serde_json`, `anyhow`.
 
 ## Installation
+
+Helpers exist for Arch and Gentoo-based systems but you can install also
+via crates.io or from source directly.
 
 ### Archlinux
 
@@ -59,6 +62,7 @@ cargo run --release --
 Usage: lsu [OPTIONS]
 
 Show systemd services in a terminal UI.
+By default only loaded and active units are shown.
 
 Options:
   -a, --all            Shorthand for --load all --active all --sub all

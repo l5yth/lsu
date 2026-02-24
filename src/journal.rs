@@ -429,6 +429,14 @@ mod tests {
     }
 
     #[test]
+    fn batch_line_budget_caps_attempt_growth_after_min_limit() {
+        let b10 = batch_line_budget(2, 10);
+        let b99 = batch_line_budget(2, 99);
+        assert_eq!(b10, b99);
+        assert!(b99 <= BATCH_MAX_LINES);
+    }
+
+    #[test]
     fn parse_latest_logs_lines_respects_budget() {
         let output = r#"{"_SYSTEMD_UNIT":"a.service","MESSAGE":"a"}
 {"_SYSTEMD_UNIT":"b.service","MESSAGE":"b"}

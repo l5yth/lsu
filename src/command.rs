@@ -237,7 +237,13 @@ fn is_under_trusted_roots(candidate: &Path, trusted_roots: &[PathBuf]) -> bool {
     let Ok(canon) = candidate.canonicalize() else {
         return false;
     };
-    trusted_roots.iter().any(|root| canon.starts_with(root))
+    let Some(file_name) = canon.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(requested) = candidate.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    trusted_roots.iter().any(|root| canon.starts_with(root)) && file_name == requested
 }
 
 #[cfg(unix)]
@@ -306,6 +312,16 @@ mod tests {
             }
             other => panic!("expected non-zero exit error, got {other}"),
         }
+    }
+
+    #[test]
+    fn cmd_stdout_non_zero_with_empty_stderr_omits_separator_suffix() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 3");
+        let err = cmd_stdout(&mut cmd).expect_err("command should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("command failed (status="));
+        assert!(!msg.contains(" | "));
     }
 
     #[test]
@@ -437,6 +453,44 @@ mod tests {
     }
 
     #[test]
+    fn resolve_trusted_binary_skips_non_executable_files() {
+        let trusted = unique_temp_dir("trusted-nonexec");
+        let target = trusted.join("systemctl");
+        fs::write(&target, b"not executable").expect("write file");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&target).expect("metadata").permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&target, perms).expect("set perms");
+        }
+
+        let err = resolve_trusted_binary_in(
+            "systemctl",
+            Some(OsStr::new(trusted.to_string_lossy().as_ref()).to_owned()),
+            std::slice::from_ref(&trusted),
+        )
+        .expect_err("non-executable path must be rejected");
+        assert!(err.to_string().contains("trusted 'systemctl' not found"));
+        let _ = fs::remove_dir_all(trusted);
+    }
+
+    #[test]
+    fn resolve_trusted_binary_handles_duplicate_path_entries() {
+        let trusted = unique_temp_dir("trusted-dup-path");
+        let bin = trusted.join("systemctl");
+        make_exec(&bin);
+        let dup_path = format!("{}:{}", trusted.display(), trusted.display());
+        let resolved = resolve_trusted_binary_in(
+            "systemctl",
+            Some(OsStr::new(&dup_path).to_owned()),
+            std::slice::from_ref(&trusted),
+        )
+        .expect("duplicate path entries should still resolve");
+        assert_eq!(resolved, bin);
+        let _ = fs::remove_dir_all(trusted);
+    }
+
+    #[test]
     fn resolve_trusted_binary_errors_when_missing() {
         let err = resolve_trusted_binary_in("systemctl", Some(OsStr::new("").to_owned()), &[])
             .expect_err("missing binary should fail");
@@ -450,5 +504,30 @@ mod tests {
             err.to_string()
                 .contains("is not in the allowed external command list")
         );
+    }
+
+    #[test]
+    fn resolve_trusted_binary_rejects_symlink_to_different_binary_name() {
+        #[cfg(not(unix))]
+        {
+            return;
+        }
+        let trusted = unique_temp_dir("trusted-link-target");
+        let untrusted = unique_temp_dir("untrusted-link");
+        let target = trusted.join("python");
+        make_exec(&target);
+        let fake = untrusted.join("systemctl");
+        std::os::unix::fs::symlink(&target, &fake).expect("symlink should be created");
+
+        let err = resolve_trusted_binary_in(
+            "systemctl",
+            Some(OsStr::new(untrusted.to_string_lossy().as_ref()).to_owned()),
+            std::slice::from_ref(&trusted),
+        )
+        .expect_err("symlink to wrong binary name must be rejected");
+        assert!(err.to_string().contains("trusted 'systemctl' not found"));
+
+        let _ = fs::remove_dir_all(trusted);
+        let _ = fs::remove_dir_all(untrusted);
     }
 }

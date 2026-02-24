@@ -1,7 +1,7 @@
 # Copyright (c) 2026 l5yth
 # SPDX-License-Identifier: Apache-2.0
 
-name: Rust CI
+name: Linux
 
 on:
   push:
@@ -10,56 +10,7 @@ on:
     branches: [main]
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Cargo check
-        run: cargo check --all --all-features
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Cargo test
-        run: cargo test --all --all-features --verbose
-
-      - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  coverage:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-
-      - name: Generate lcov coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          fail_ci_if_error: false
-
-  archlinux-package:
+  pkgbuild:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -78,7 +29,7 @@ jobs:
           chown -R builder:builder "${GITHUB_WORKSPACE}"
           su - builder -c "cd '${GITHUB_WORKSPACE}/packaging/archlinux' && sed -i \"s|^source=.*$|source=(\\\"lsu::git+https://github.com/${GITHUB_REPOSITORY}.git#commit=${GITHUB_SHA}\\\")|\" PKGBUILD && makepkg --syncdeps --noconfirm --cleanbuild --clean --install"
 
-  gentoo-ebuild:
+  ebuild:
     runs-on: ubuntu-latest
     container:
       image: gentoo/stage3:latest

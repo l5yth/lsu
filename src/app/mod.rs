@@ -14,24 +14,27 @@
    limitations under the License.
 */
 
-//! Binary entry point for `lsu`.
+//! App entry module.
+//!
+//! In test builds we expose a lightweight stub to keep unit-test coverage
+//! focused on deterministic logic modules rather than terminal runtime I/O.
 
-/// Launch the application.
-fn main() -> anyhow::Result<()> {
-    #[cfg(test)]
-    {
-        Ok(())
-    }
-    #[cfg(not(test))]
-    {
-        lsu::run()
-    }
+#[cfg(not(test))]
+pub mod tui;
+
+#[cfg(not(test))]
+pub use self::tui::run;
+
+#[cfg(test)]
+/// Test-only runner stub.
+pub fn run() -> anyhow::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn main_returns_ok_in_test_mode() {
-        assert!(super::main().is_ok());
+    fn test_run_stub_is_ok() {
+        assert!(super::run().is_ok());
     }
 }

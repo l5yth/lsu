@@ -127,8 +127,6 @@ jobs:
           EOF
           mkdir -p /etc/portage/package.accept_keywords
           printf "=app-misc/lsu-9999 **\n" > /etc/portage/package.accept_keywords/localrepo
-          mkdir -p /etc/portage/package.use
-          printf ">=sys-apps/dbus-1.16.2 systemd\n" > /etc/portage/package.use/localrepo
 
       - name: Validate ebuild and resolve install plan
         run: |

@@ -80,6 +80,7 @@ impl DetailState {
     /// Enter detail mode for a unit and start an async fetch request.
     pub fn begin_for_unit(&mut self, unit: String) -> u64 {
         self.unit = unit;
+        self.logs.clear();
         self.scroll = 0;
         self.loading = true;
         self.error = None;
@@ -198,5 +199,50 @@ mod tests {
         assert!(state.apply_loaded(refresh_id, "a.service", vec![sample_log("z")]));
         assert_eq!(state.scroll, 0);
         assert_eq!(state.logs[0].log, "z");
+    }
+
+    #[test]
+    fn detail_state_refresh_returns_none_without_unit() {
+        let mut state = DetailState::default();
+        assert!(state.refresh().is_none());
+    }
+
+    #[test]
+    fn detail_state_apply_error_sets_error_and_stops_loading() {
+        let mut state = DetailState::default();
+        let id = state.begin_for_unit("a.service".to_string());
+        assert!(state.apply_error(id, "a.service", "boom".to_string()));
+        assert!(!state.loading);
+        assert_eq!(state.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn detail_state_apply_error_ignores_mismatched_request() {
+        let mut state = DetailState::default();
+        let id = state.begin_for_unit("a.service".to_string());
+        assert!(!state.apply_error(id + 1, "a.service", "boom".to_string()));
+        assert!(!state.apply_error(id, "b.service", "boom".to_string()));
+    }
+
+    #[test]
+    fn detail_state_apply_loaded_empty_logs_resets_scroll() {
+        let mut state = DetailState::default();
+        let id = state.begin_for_unit("a.service".to_string());
+        state.scroll = 10;
+        assert!(state.apply_loaded(id, "a.service", Vec::new()));
+        assert_eq!(state.scroll, 0);
+        assert!(state.logs.is_empty());
+    }
+
+    #[test]
+    fn detail_state_switching_unit_clears_old_logs_immediately() {
+        let mut state = DetailState::default();
+        let id = state.begin_for_unit("a.service".to_string());
+        assert!(state.apply_loaded(id, "a.service", vec![sample_log("old")]));
+        assert_eq!(state.logs.len(), 1);
+        let _ = state.begin_for_unit("b.service".to_string());
+        assert!(state.logs.is_empty());
+        assert_eq!(state.scroll, 0);
+        assert!(state.loading);
     }
 }

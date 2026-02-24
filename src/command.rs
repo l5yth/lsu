@@ -19,6 +19,7 @@
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashSet;
 use std::env;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
@@ -113,24 +114,36 @@ pub fn cmd_stdout_with_timeout(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CommandExecError::Io(std::io::Error::other("missing child stdout pipe")))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CommandExecError::Io(std::io::Error::other("missing child stderr pipe")))?;
+    let stdout_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        out
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stderr.read_to_end(&mut out);
+        out
+    });
     let start = Instant::now();
 
-    loop {
+    let status = loop {
         if let Some(status) = child.try_wait()? {
-            let out = child.wait_with_output()?;
-            if !status.success() {
-                return Err(CommandExecError::NonZeroExit {
-                    command: rendered,
-                    status,
-                    stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-                });
-            }
-            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            break status;
         }
 
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout_handle.join();
+            let _ = stderr_handle.join();
             return Err(CommandExecError::Timeout {
                 command: rendered,
                 timeout,
@@ -138,7 +151,18 @@ pub fn cmd_stdout_with_timeout(
         }
 
         thread::sleep(Duration::from_millis(10));
+    };
+
+    let stdout = stdout_handle.join().unwrap_or_default();
+    let stderr = stderr_handle.join().unwrap_or_default();
+    if !status.success() {
+        return Err(CommandExecError::NonZeroExit {
+            command: rendered,
+            status,
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
+        });
     }
+    Ok(String::from_utf8_lossy(&stdout).to_string())
 }
 
 fn render_command(cmd: &Command) -> String {
@@ -232,11 +256,15 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
     use std::ffi::OsStr;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let n = SystemTime::now()
@@ -295,6 +323,82 @@ mod tests {
     }
 
     #[test]
+    fn cmd_stdout_handles_large_stdout_without_deadlock() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("head -c 1048576 /dev/zero 2>/dev/null | tr '\\0' x");
+        let out = cmd_stdout_with_timeout(&mut cmd, Duration::from_secs(2))
+            .expect("large output command should succeed");
+        assert_eq!(out.len(), 1_048_576);
+    }
+
+    #[test]
+    fn command_timeout_defaults_when_env_is_missing_or_invalid() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let prev = env::var_os("LSU_CMD_TIMEOUT_SECS");
+        // SAFETY: test serializes env access with ENV_LOCK.
+        unsafe { env::remove_var("LSU_CMD_TIMEOUT_SECS") };
+        assert_eq!(command_timeout(), Duration::from_secs(5));
+        // SAFETY: test serializes env access with ENV_LOCK.
+        unsafe { env::set_var("LSU_CMD_TIMEOUT_SECS", "invalid") };
+        assert_eq!(command_timeout(), Duration::from_secs(5));
+        // SAFETY: test serializes env access with ENV_LOCK.
+        unsafe { env::set_var("LSU_CMD_TIMEOUT_SECS", "0") };
+        assert_eq!(command_timeout(), Duration::from_secs(5));
+        match prev {
+            Some(v) => {
+                // SAFETY: test serializes env access with ENV_LOCK.
+                unsafe { env::set_var("LSU_CMD_TIMEOUT_SECS", v) }
+            }
+            None => {
+                // SAFETY: test serializes env access with ENV_LOCK.
+                unsafe { env::remove_var("LSU_CMD_TIMEOUT_SECS") }
+            }
+        }
+    }
+
+    #[test]
+    fn command_timeout_uses_positive_env_value() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let prev = env::var_os("LSU_CMD_TIMEOUT_SECS");
+        // SAFETY: test serializes env access with ENV_LOCK.
+        unsafe { env::set_var("LSU_CMD_TIMEOUT_SECS", "13") };
+        assert_eq!(command_timeout(), Duration::from_secs(13));
+        match prev {
+            Some(v) => {
+                // SAFETY: test serializes env access with ENV_LOCK.
+                unsafe { env::set_var("LSU_CMD_TIMEOUT_SECS", v) }
+            }
+            None => {
+                // SAFETY: test serializes env access with ENV_LOCK.
+                unsafe { env::remove_var("LSU_CMD_TIMEOUT_SECS") }
+            }
+        }
+    }
+
+    #[test]
+    fn command_exec_error_display_and_source_cover_variants() {
+        let io = std::io::Error::other("io");
+        let io_err = CommandExecError::from(io);
+        assert!(io_err.to_string().contains("io"));
+        assert!(io_err.source().is_some());
+
+        let timeout = CommandExecError::Timeout {
+            command: "cmd".to_string(),
+            timeout: Duration::from_secs(2),
+        };
+        assert!(timeout.to_string().contains("timed out"));
+        assert!(timeout.source().is_none());
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 9");
+        let err = cmd_stdout(&mut cmd).expect_err("expected non-zero");
+        let msg = err.to_string();
+        assert!(msg.contains("status="));
+        assert!(msg.contains("sh -c exit 9"));
+    }
+
+    #[test]
     fn resolve_trusted_binary_returns_path_from_trusted_dir() {
         let trusted = unique_temp_dir("trusted");
         let untrusted = unique_temp_dir("untrusted");
@@ -337,5 +441,14 @@ mod tests {
         let err = resolve_trusted_binary_in("systemctl", Some(OsStr::new("").to_owned()), &[])
             .expect_err("missing binary should fail");
         assert!(err.to_string().contains("trusted 'systemctl' not found"));
+    }
+
+    #[test]
+    fn resolve_trusted_binary_rejects_disallowed_binary() {
+        let err = resolve_trusted_binary_in("sh", None, &[]).expect_err("must reject");
+        assert!(
+            err.to_string()
+                .contains("is not in the allowed external command list")
+        );
     }
 }

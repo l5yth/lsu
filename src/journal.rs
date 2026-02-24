@@ -246,14 +246,17 @@ fn stream_batch_latest_logs(
         }
     }
 
-    if found.len() == wanted.len() {
+    let terminated_early = found.len() == wanted.len();
+    if terminated_early {
         let _ = child.kill();
+        let _ = child.wait();
+    } else {
+        wait_child_with_timeout(&mut child, deadline)?;
     }
-    wait_child_with_timeout(&mut child, deadline)?;
 
     let _ = read_handle.join();
     let stderr_output = stderr_handle.join().unwrap_or_default();
-    if stderr_output.contains("Failed") || stderr_output.contains("failed") {
+    if !terminated_early && (stderr_output.contains("Failed") || stderr_output.contains("failed")) {
         bail!("journalctl batch query failed: {}", stderr_output.trim());
     }
     Ok(found)
@@ -418,6 +421,11 @@ mod tests {
         assert!(b1 >= b0);
         assert!(b2 >= b1);
         assert!(b2 <= BATCH_MAX_LINES);
+    }
+
+    #[test]
+    fn batch_line_budget_uses_minimum_floor_for_small_inputs() {
+        assert_eq!(batch_line_budget(1, 0), BATCH_MIN_LINES);
     }
 
     #[test]

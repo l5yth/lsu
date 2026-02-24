@@ -484,7 +484,10 @@ pub fn run() -> Result<()> {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('r') => {
                             refresh_requested = true;
-                            if let Some(request_id) = detail.refresh() {
+                            if detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
                                 detail_worker_rx =
                                     Some(spawn_detail_worker(detail.unit.clone(), request_id));
                             }
@@ -502,7 +505,10 @@ pub fn run() -> Result<()> {
                             view_mode = ViewMode::List;
                         }
                         KeyCode::Char('l') => {
-                            if let Some(request_id) = detail.refresh() {
+                            if detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
                                 detail_worker_rx =
                                     Some(spawn_detail_worker(detail.unit.clone(), request_id));
                             }

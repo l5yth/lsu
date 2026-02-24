@@ -17,8 +17,9 @@
 //! Process execution helpers.
 
 use anyhow::{Result, anyhow, bail};
-use std::collections::HashSet;
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::env;
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -197,16 +198,16 @@ fn resolve_trusted_binary_in(
         );
     }
 
-    let trusted_roots = canonical_trusted_roots(trusted_dirs);
     let path_entries: Vec<PathBuf> = path_env
         .as_deref()
         .map(env::split_paths)
         .map(Iterator::collect)
         .unwrap_or_default();
+    let trusted_roots = canonical_trusted_roots(trusted_dirs, &path_entries);
 
     let mut checked = HashSet::new();
 
-    for dir in path_entries.iter().chain(trusted_dirs.iter()) {
+    for dir in trusted_dirs.iter().chain(path_entries.iter()) {
         let candidate = dir.join(binary);
         if !checked.insert(candidate.clone()) || !candidate.is_file() {
             continue;
@@ -226,11 +227,28 @@ fn resolve_trusted_binary_in(
     ))
 }
 
-fn canonical_trusted_roots(trusted_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    trusted_dirs
-        .iter()
-        .filter_map(|d| d.canonicalize().ok())
-        .collect()
+fn canonical_trusted_roots(trusted_dirs: &[PathBuf], path_entries: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in trusted_dirs.iter().chain(path_entries.iter()) {
+        let Ok(canon) = dir.canonicalize() else {
+            continue;
+        };
+        if !is_secure_dir(&canon) {
+            continue;
+        }
+        if !seen.insert(path_key(&canon)) {
+            continue;
+        }
+        out.push(canon);
+    }
+    out
+}
+
+fn path_key(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn canonical_trusted_candidate(candidate: &Path, trusted_roots: &[PathBuf]) -> Option<PathBuf> {
@@ -244,6 +262,19 @@ fn canonical_trusted_candidate(candidate: &Path, trusted_roots: &[PathBuf]) -> O
     } else {
         None
     }
+}
+
+#[cfg(unix)]
+fn is_secure_dir(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| (m.permissions().mode() & 0o022) == 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_secure_dir(path: &Path) -> bool {
+    path.is_dir()
 }
 
 #[cfg(unix)]
@@ -441,6 +472,13 @@ mod tests {
         let untrusted_bin = untrusted.join("journalctl");
         make_exec(&untrusted_bin);
 
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&untrusted).expect("metadata").permissions();
+            perms.set_mode(0o777);
+            fs::set_permissions(&untrusted, perms).expect("set perms");
+        }
+
         let err = resolve_trusted_binary_in(
             "journalctl",
             Some(OsStr::new(untrusted.to_string_lossy().as_ref()).to_owned()),
@@ -554,5 +592,26 @@ mod tests {
         assert_eq!(resolved, target.canonicalize().expect("canonical target"));
         let _ = fs::remove_dir_all(trusted);
         let _ = fs::remove_dir_all(untrusted);
+    }
+
+    #[test]
+    fn resolve_trusted_binary_allows_secure_path_entry_outside_defaults() {
+        let secure = unique_temp_dir("secure-outside-default");
+        let bin = secure.join("systemctl");
+        make_exec(&bin);
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&secure).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&secure, perms).expect("set perms");
+        }
+        let resolved = resolve_trusted_binary_in(
+            "systemctl",
+            Some(OsStr::new(secure.to_string_lossy().as_ref()).to_owned()),
+            &[],
+        )
+        .expect("secure PATH entry should be allowed");
+        assert_eq!(resolved, bin.canonicalize().expect("canonical path"));
+        let _ = fs::remove_dir_all(secure);
     }
 }

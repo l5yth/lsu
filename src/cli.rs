@@ -245,7 +245,7 @@ pub fn usage() -> &'static str {
     concat!(
         "lsu v",
         env!("CARGO_PKG_VERSION"),
-        "\n\nUsage: lsu [OPTIONS]
+        "\napache v2 (c) 2026 l5yth\n\nUsage: lsu [OPTIONS]
 
 Show systemd services in a terminal UI.
 By default only loaded and active units are shown.
@@ -257,13 +257,17 @@ Options:
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -h, --help           Show this help text
-  -V, --version        Show version and copyright"
+  -v, --version        Show version and copyright"
     )
 }
 
 /// Human-readable version output.
 pub fn version_text() -> &'static str {
-    concat!("lsu v", env!("CARGO_PKG_VERSION"), "\n(c) 2026 l5yth")
+    concat!(
+        "lsu v",
+        env!("CARGO_PKG_VERSION"),
+        "\napache v2 (c) 2026 l5yth"
+    )
 }
 
 fn parse_refresh_secs(value: &str) -> Result<u64> {
@@ -297,7 +301,7 @@ where
                 saw_all = true;
             }
             "-h" | "--help" => show_help = true,
-            "-V" | "--version" => show_version = true,
+            "-v" | "--version" => show_version = true,
             "--load" => {
                 let value = it
                     .next()
@@ -425,6 +429,9 @@ mod tests {
     fn parse_args_version_flag() {
         let cfg = parse_args(vec!["lsu", "--version"]).expect("version should parse");
         assert!(cfg.show_version);
+
+        let cfg = parse_args(vec!["lsu", "-v"]).expect("short version should parse");
+        assert!(cfg.show_version);
     }
 
     #[test]
@@ -497,7 +504,7 @@ mod tests {
     fn version_text_contains_required_lines() {
         let v = version_text();
         assert!(v.contains(&format!("lsu v{}", env!("CARGO_PKG_VERSION"))));
-        assert!(v.contains("(c) 2026 l5yth"));
+        assert!(v.contains("apache v2 (c) 2026 l5yth"));
     }
 
     #[test]

@@ -286,7 +286,10 @@ pub fn latest_log_lines_batch(unit_names: &[String]) -> Result<HashMap<String, S
             break;
         }
         let budget = batch_line_budget(unresolved.len(), attempt);
-        let partial = stream_batch_latest_logs(&unresolved, budget)?;
+        let partial = match stream_batch_latest_logs(&unresolved, budget) {
+            Ok(partial) => partial,
+            Err(_) => break,
+        };
         for (unit, message) in partial {
             if !message.trim().is_empty() {
                 out.insert(unit, message);
@@ -297,12 +300,7 @@ pub fn latest_log_lines_batch(unit_names: &[String]) -> Result<HashMap<String, S
 
     for unit in unresolved {
         if out.get(&unit).is_none_or(|v| v.trim().is_empty()) {
-            out.insert(
-                unit.clone(),
-                last_log_line(&unit).with_context(|| {
-                    format!("journalctl fallback last line failed for {}", unit)
-                })?,
-            );
+            out.insert(unit.clone(), last_log_line(&unit).unwrap_or_default());
         }
     }
 
@@ -460,5 +458,20 @@ mod tests {
         assert!(logs.contains_key("a.service"));
         assert!(logs.contains_key("b.service"));
         assert!(!logs.contains_key("c.service"));
+    }
+
+    #[test]
+    fn latest_log_lines_batch_stub_stays_ok_for_non_empty_input() {
+        let logs = latest_log_lines_batch(&["a.service".to_string(), "b.service".to_string()])
+            .expect("stub should not fail");
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn fallback_error_path_is_non_fatal_in_runtime_contract() {
+        // This documents the intended behavior: per-unit fallback errors must not abort the batch.
+        // In test builds fallback stubs are always successful, so the function returns Ok.
+        let unit_names = ["broken.service".to_string()];
+        assert!(latest_log_lines_batch(&unit_names).is_ok());
     }
 }

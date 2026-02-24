@@ -19,7 +19,7 @@ RDEPEND="
 	sys-apps/systemd
 "
 BDEPEND="
-	virtual/rust
+	dev-lang/rust
 "
 
 src_unpack() {
@@ -28,10 +28,10 @@ src_unpack() {
 }
 
 src_compile() {
-	cargo_src_compile --bin lsu
+	cargo_src_compile --release --bin lsu
 }
 
 src_install() {
-	cargo_src_install --bin lsu
+	dobin target/release/lsu
 	einstalldocs
 }

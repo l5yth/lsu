@@ -3,12 +3,13 @@
 # Maintainer: l5yth <aur@l5y.tech>
 
 pkgname=lsu-git
-pkgver=0.1.0.r0.g0000000
+pkgver=0.0.0.r7.g30d15a2
 pkgrel=1
 pkgdesc="Terminal UI for systemd services and latest journal lines"
 arch=('x86_64')
 url="https://github.com/l5yth/lsu"
 license=('Apache')
+options=('!debug')
 depends=('systemd')
 makedepends=('cargo' 'git')
 source=("git+https://github.com/l5yth/lsu.git")

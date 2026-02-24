@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
-use crate::types::DetailLogEntry;
+use crate::types::{DetailLogEntry, Scope};
 
 const BATCH_MIN_LINES: usize = 200;
 const BATCH_PER_UNIT_LINES: usize = 20;
@@ -43,10 +43,11 @@ const BATCH_MAX_ATTEMPTS: usize = 3;
 
 /// Fetch the latest log message text for one systemd unit.
 #[cfg(not(test))]
-pub fn last_log_line(unit: &str) -> Result<String> {
+pub fn last_log_line(scope: Scope, unit: &str) -> Result<String> {
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
-    cmd.arg("-u")
+    cmd.arg(scope.as_systemd_arg())
+        .arg("-u")
         .arg(unit)
         .arg("-n")
         .arg("1")
@@ -177,13 +178,15 @@ fn wait_child_with_timeout(child: &mut std::process::Child, deadline: Instant) -
 
 #[cfg(not(test))]
 fn stream_batch_latest_logs(
+    scope: Scope,
     unit_names: &[String],
     line_budget: usize,
 ) -> Result<HashMap<String, String>> {
     let wanted: HashSet<String> = unit_names.iter().cloned().collect();
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
-    cmd.arg("--no-pager")
+    cmd.arg(scope.as_systemd_arg())
+        .arg("--no-pager")
         .arg("-o")
         .arg("json")
         .arg("-r")
@@ -273,7 +276,10 @@ fn stream_batch_latest_logs(
 
 /// Fetch latest logs for a batch of units, with per-unit fallback for missing/empty results.
 #[cfg(not(test))]
-pub fn latest_log_lines_batch(unit_names: &[String]) -> Result<HashMap<String, String>> {
+pub fn latest_log_lines_batch(
+    scope: Scope,
+    unit_names: &[String],
+) -> Result<HashMap<String, String>> {
     if unit_names.is_empty() {
         return Ok(HashMap::new());
     }
@@ -286,7 +292,7 @@ pub fn latest_log_lines_batch(unit_names: &[String]) -> Result<HashMap<String, S
             break;
         }
         let budget = batch_line_budget(unresolved.len(), attempt);
-        let partial = match stream_batch_latest_logs(&unresolved, budget) {
+        let partial = match stream_batch_latest_logs(scope, &unresolved, budget) {
             Ok(partial) => partial,
             Err(_) => break,
         };
@@ -300,7 +306,10 @@ pub fn latest_log_lines_batch(unit_names: &[String]) -> Result<HashMap<String, S
 
     for unit in unresolved {
         if out.get(&unit).is_none_or(|v| v.trim().is_empty()) {
-            out.insert(unit.clone(), last_log_line(&unit).unwrap_or_default());
+            out.insert(
+                unit.clone(),
+                last_log_line(scope, &unit).unwrap_or_default(),
+            );
         }
     }
 
@@ -339,10 +348,11 @@ pub fn parse_journal_short_iso(output: &str) -> Vec<DetailLogEntry> {
 
 /// Fetch timestamped detail logs for a single unit.
 #[cfg(not(test))]
-pub fn fetch_unit_logs(unit: &str, max_lines: usize) -> Result<Vec<DetailLogEntry>> {
+pub fn fetch_unit_logs(scope: Scope, unit: &str, max_lines: usize) -> Result<Vec<DetailLogEntry>> {
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
-    cmd.arg("-u")
+    cmd.arg(scope.as_systemd_arg())
+        .arg("-u")
         .arg(unit)
         .arg("-n")
         .arg(max_lines.to_string())

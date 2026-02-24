@@ -42,7 +42,7 @@ use crate::{
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, preserve_selection, seed_logs_from_previous, sort_rows},
     systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
-    types::{DetailState, LoadPhase, UnitRow, ViewMode, WorkerMsg},
+    types::{DetailState, LoadPhase, Scope, UnitRow, ViewMode, WorkerMsg},
 };
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -64,13 +64,14 @@ fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let fetch_all = should_fetch_all(&config);
-        let units = match fetch_services(fetch_all).map(|u| filter_services(u, &config)) {
-            Ok(units) => units,
-            Err(e) => {
-                let _ = tx.send(WorkerMsg::Error(e.to_string()));
-                return;
-            }
-        };
+        let units =
+            match fetch_services(config.scope, fetch_all).map(|u| filter_services(u, &config)) {
+                Ok(units) => units,
+                Err(e) => {
+                    let _ = tx.send(WorkerMsg::Error(e.to_string()));
+                    return;
+                }
+            };
 
         let mut rows = build_rows(units);
         seed_logs_from_previous(&mut rows, &previous_rows);
@@ -90,7 +91,7 @@ fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver
         while done < rows.len() {
             let end = std::cmp::min(done + LOG_BATCH_SIZE, rows.len());
             let units: Vec<String> = rows[done..end].iter().map(|r| r.unit.clone()).collect();
-            let logs = match latest_log_lines_batch(&units) {
+            let logs = match latest_log_lines_batch(config.scope, &units) {
                 Ok(logs) => logs.into_iter().collect(),
                 Err(e) => {
                     let _ = tx.send(WorkerMsg::Error(e.to_string()));
@@ -115,9 +116,9 @@ fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver
     rx
 }
 
-fn spawn_detail_worker(unit: String, request_id: u64) -> Receiver<WorkerMsg> {
+fn spawn_detail_worker(scope: Scope, unit: String, request_id: u64) -> Receiver<WorkerMsg> {
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || match fetch_unit_logs(&unit, 300) {
+    thread::spawn(move || match fetch_unit_logs(scope, &unit, 300) {
         Ok(logs) => {
             let _ = tx.send(WorkerMsg::DetailLogsLoaded {
                 unit,
@@ -477,8 +478,11 @@ pub fn run() -> Result<()> {
                         KeyCode::Char('l') | KeyCode::Enter => {
                             if let Some(row) = rows.get(selected_idx) {
                                 let request_id = detail.begin_for_unit(row.unit.clone());
-                                detail_worker_rx =
-                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    config.scope,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
                                 view_mode = ViewMode::Detail;
                             }
                         }
@@ -492,8 +496,11 @@ pub fn run() -> Result<()> {
                                 && !detail.loading
                                 && let Some(request_id) = detail.refresh()
                             {
-                                detail_worker_rx =
-                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    config.scope,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
                             }
                         }
                         KeyCode::Down => {
@@ -513,8 +520,11 @@ pub fn run() -> Result<()> {
                                 && !detail.loading
                                 && let Some(request_id) = detail.refresh()
                             {
-                                detail_worker_rx =
-                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    config.scope,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
                             }
                         }
                         _ => {}

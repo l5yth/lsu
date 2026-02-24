@@ -19,6 +19,8 @@
 use anyhow::{Context, Result, anyhow};
 use std::str::FromStr;
 
+use crate::types::Scope;
+
 /// Parsed command-line configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -28,6 +30,7 @@ pub struct Config {
     pub refresh_secs: u64,
     pub show_help: bool,
     pub show_version: bool,
+    pub scope: Scope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +259,7 @@ Options:
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
+      --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright"
     )
@@ -291,6 +295,7 @@ where
     let mut show_version = false;
     let mut saw_all = false;
     let mut saw_specific_filter = false;
+    let mut scope = Scope::System;
 
     let mut it = args.into_iter().map(Into::into);
     let _program = it.next();
@@ -328,6 +333,9 @@ where
                     .next()
                     .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
                 refresh_secs = parse_refresh_secs(&value)?;
+            }
+            "--user" => {
+                scope = Scope::User;
             }
             _ => {
                 if let Some(value) = arg.strip_prefix("--load=") {
@@ -374,6 +382,7 @@ where
         refresh_secs,
         show_help,
         show_version,
+        scope,
     })
 }
 

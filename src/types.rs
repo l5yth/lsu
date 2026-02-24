@@ -19,6 +19,22 @@
 use ratatui::prelude::Style;
 use serde::Deserialize;
 
+/// Systemd unit scope.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope {
+    User,
+    System,
+}
+
+impl Scope {
+    pub fn as_systemd_arg(&self) -> &'static str {
+        match self {
+            Self::System => "--system",
+            Self::User => "--user",
+        }
+    }
+}
+
 /// JSON row returned by `systemctl list-units --output=json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SystemctlUnit {

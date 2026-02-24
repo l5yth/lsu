@@ -1,11 +1,11 @@
 // Copyright (c) 2026 l5yth
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     prelude::*,
@@ -14,8 +14,7 @@ use ratatui::{
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    io,
+    env, io,
     process::Command,
     time::{Duration, Instant},
 };
@@ -312,9 +311,8 @@ fn main() -> Result<()> {
     } else {
         format!("{}s", config.refresh_secs)
     };
-    let mut status_line = format!(
-        "{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh"
-    );
+    let mut status_line =
+        format!("{mode_label}: 0 | auto-refresh: {refresh_label} | q: quit | r: refresh");
 
     let res = (|| -> Result<()> {
         loop {
@@ -509,8 +507,7 @@ mod tests {
 
     #[test]
     fn parse_args_all_and_refresh() {
-        let cfg = parse_args(vec!["lsu", "--all", "--refresh", "5"])
-            .expect("flags should parse");
+        let cfg = parse_args(vec!["lsu", "--all", "--refresh", "5"]).expect("flags should parse");
         assert!(cfg.show_all);
         assert_eq!(cfg.refresh_secs, 5);
         assert!(!cfg.show_help);

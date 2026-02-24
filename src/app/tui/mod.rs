@@ -128,6 +128,8 @@ pub fn run() -> Result<()> {
     let mut refresh_requested = true;
     let mut phase = LoadPhase::Idle;
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
+    let mut loaded_once = false;
+    let mut last_load_error = false;
 
     let mut rows: Vec<UnitRow> = Vec::new();
     let mut row_index_by_unit: HashMap<String, usize> = HashMap::new();
@@ -171,11 +173,21 @@ pub fn run() -> Result<()> {
                             let inner = block.inner(chunks[0]);
                             f.render_widget(block, chunks[0]);
 
-                            let message = if matches!(phase, LoadPhase::Idle) {
+                            let message = if matches!(phase, LoadPhase::Idle)
+                                && loaded_once
+                                && !last_load_error
+                                && worker_rx.is_none()
+                                && !refresh_requested
+                            {
                                 format!(
                                     "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
                                     config.load_filter, config.active_filter, config.sub_filter
                                 )
+                            } else if last_load_error
+                                && matches!(phase, LoadPhase::Idle)
+                                && worker_rx.is_none()
+                            {
+                                "Last refresh failed. Press r to retry.".to_string()
                             } else {
                                 "Loading units and logs...".to_string()
                             };
@@ -288,6 +300,8 @@ pub fn run() -> Result<()> {
                 loop {
                     match rx.try_recv() {
                         Ok(WorkerMsg::UnitsLoaded(new_rows)) => {
+                            loaded_once = true;
+                            last_load_error = false;
                             let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
                             rows = new_rows;
                             row_index_by_unit = rows
@@ -343,6 +357,7 @@ pub fn run() -> Result<()> {
                             break;
                         }
                         Ok(WorkerMsg::Error(e)) => {
+                            last_load_error = true;
                             status_line = format!(
                                 "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
                             );

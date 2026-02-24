@@ -22,14 +22,17 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Cargo check
+        run: cargo check --all --all-features
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Cargo check
-        run: cargo check
-
       - name: Cargo test
-        run: cargo test
+        run: cargo test --all --all-features --verbose
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   coverage:
     runs-on: ubuntu-latest

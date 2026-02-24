@@ -37,15 +37,19 @@ cargo run --
 
 ## Usage
 
-```bash
-lsu [OPTIONS]
-```
+```text
+Usage: lsu [OPTIONS]
+
+Show systemd services in a terminal UI.
 
 Options:
-
-- `-a`, `--all`: include non-active service units
-- `-r`, `--refresh <num>`: auto-refresh every `<num>` seconds (`0` disables, default: `0`)
-- `-h`, `--help`: show usage help
+  -a, --all            Shorthand for --load all --active all --sub all
+      --load <value>   Filter by load state (e.g. loaded, not-found, masked, all)
+      --active <value> Filter by active state (e.g. active, inactive, failed, all)
+      --sub <value>    Filter by sub state (e.g. running, exited, dead, all)
+  -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
+  -h, --help           Show this help text
+```
 
 Examples:
 
@@ -69,4 +73,3 @@ cargo test
 cargo fmt --all
 cargo clippy --all-targets --all-features -D warnings
 ```
-

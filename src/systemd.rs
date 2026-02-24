@@ -16,14 +16,14 @@
 
 //! `systemctl` integration and service filtering logic.
 
-#[cfg(not(test))]
-use anyhow::Context;
 use anyhow::Result;
+#[cfg(not(test))]
+use anyhow::{Context, bail};
 #[cfg(not(test))]
 use std::process::Command;
 
 #[cfg(not(test))]
-use crate::command::cmd_stdout;
+use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
 use crate::{cli::Config, types::SystemctlUnit};
 
 /// Match one state value against a filter value (`all` means wildcard).
@@ -44,7 +44,8 @@ pub fn should_fetch_all(cfg: &Config) -> bool {
 /// Query service units via `systemctl` JSON output.
 #[cfg(not(test))]
 pub fn fetch_services(show_all: bool) -> Result<Vec<SystemctlUnit>> {
-    let mut cmd = Command::new("systemctl");
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
     cmd.arg("list-units")
         .arg("--no-pager")
         .arg("--plain")
@@ -57,7 +58,16 @@ pub fn fetch_services(show_all: bool) -> Result<Vec<SystemctlUnit>> {
         cmd.arg("--state=running");
     }
 
-    let s = cmd_stdout(&mut cmd).context("systemctl list-units failed")?;
+    let s = match cmd_stdout(&mut cmd) {
+        Ok(s) => s,
+        Err(CommandExecError::Timeout { .. }) => {
+            bail!(
+                "systemctl list-units timed out after {}s",
+                command_timeout().as_secs()
+            )
+        }
+        Err(e) => return Err(e).context("systemctl list-units failed"),
+    };
     let units: Vec<SystemctlUnit> =
         serde_json::from_str(&s).context("failed to parse systemctl JSON")?;
     Ok(units)

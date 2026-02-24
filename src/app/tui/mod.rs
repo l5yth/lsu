@@ -42,7 +42,7 @@ use crate::{
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, preserve_selection, seed_logs_from_previous, sort_rows},
     systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
-    types::{DetailLogEntry, LoadPhase, UnitRow, ViewMode, WorkerMsg},
+    types::{DetailState, LoadPhase, UnitRow, ViewMode, WorkerMsg},
 };
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -90,7 +90,13 @@ fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver
         while done < rows.len() {
             let end = std::cmp::min(done + LOG_BATCH_SIZE, rows.len());
             let units: Vec<String> = rows[done..end].iter().map(|r| r.unit.clone()).collect();
-            let logs = latest_log_lines_batch(&units).into_iter().collect();
+            let logs = match latest_log_lines_batch(&units) {
+                Ok(logs) => logs.into_iter().collect(),
+                Err(e) => {
+                    let _ = tx.send(WorkerMsg::Error(e.to_string()));
+                    return;
+                }
+            };
             if tx
                 .send(WorkerMsg::LogsProgress {
                     done: end,
@@ -105,6 +111,27 @@ fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver
         }
 
         let _ = tx.send(WorkerMsg::Finished);
+    });
+    rx
+}
+
+fn spawn_detail_worker(unit: String, request_id: u64) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || match fetch_unit_logs(&unit, 300) {
+        Ok(logs) => {
+            let _ = tx.send(WorkerMsg::DetailLogsLoaded {
+                unit,
+                request_id,
+                logs,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::DetailLogsError {
+                unit,
+                request_id,
+                error: e.to_string(),
+            });
+        }
     });
     rx
 }
@@ -128,6 +155,7 @@ pub fn run() -> Result<()> {
     let mut refresh_requested = true;
     let mut phase = LoadPhase::Idle;
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
+    let mut detail_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut loaded_once = false;
     let mut last_load_error = false;
 
@@ -136,9 +164,7 @@ pub fn run() -> Result<()> {
     let mut selected_idx: usize = 0;
     let mut list_table_state = TableState::default();
     let mut view_mode = ViewMode::List;
-    let mut detail_unit = String::new();
-    let mut detail_logs: Vec<DetailLogEntry> = Vec::new();
-    let mut detail_scroll: usize = 0;
+    let mut detail = DetailState::default();
     let mode_label = "services";
     let refresh_label = if config.refresh_secs == 0 {
         "off".to_string()
@@ -252,15 +278,16 @@ pub fn run() -> Result<()> {
                     ViewMode::Detail => {
                         let unit_meta = rows
                             .iter()
-                            .find(|r| r.unit == detail_unit)
+                            .find(|r| r.unit == detail.unit)
                             .map(|r| format!("unit: {}", r.unit))
-                            .unwrap_or_else(|| format!("unit: {}", detail_unit));
+                            .unwrap_or_else(|| format!("unit: {}", detail.unit));
 
                         let header = Row::new([Cell::from("time"), Cell::from("log")])
                             .style(Style::default().add_modifier(Modifier::BOLD));
-                        let log_rows = detail_logs
+                        let log_rows = detail
+                            .logs
                             .iter()
-                            .skip(detail_scroll)
+                            .skip(detail.scroll)
                             .map(|entry| Row::new([entry.time.clone(), entry.log.clone()]));
 
                         let table =
@@ -269,15 +296,22 @@ pub fn run() -> Result<()> {
                                 .block(
                                     Block::default()
                                         .borders(Borders::ALL)
-                                        .title(format!("logs for {}", detail_unit)),
+                                        .title(format!("logs for {}", detail.unit)),
                                 )
                                 .column_spacing(1);
                         f.render_widget(table, chunks[0]);
 
+                        let detail_status = if detail.loading {
+                            "loading logs...".to_string()
+                        } else if let Some(err) = &detail.error {
+                            format!("error: {err}")
+                        } else {
+                            format!("logs: {}", detail.logs.len())
+                        };
                         let footer = Paragraph::new(format!(
-                            "{} | logs: {} | ↑/↓: scroll | b/esc: back | q: quit | r: refresh",
+                            "{} | {} | ↑/↓: scroll | b/esc: back | q: quit | r: refresh",
                             unit_meta,
-                            detail_logs.len()
+                            detail_status
                         ))
                         .style(Style::default().fg(Color::DarkGray));
                         f.render_widget(footer, chunks[1]);
@@ -365,6 +399,11 @@ pub fn run() -> Result<()> {
                             clear_worker = true;
                             break;
                         }
+                        Ok(
+                            WorkerMsg::DetailLogsLoaded { .. } | WorkerMsg::DetailLogsError { .. },
+                        ) => {
+                            continue;
+                        }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
                             phase = LoadPhase::Idle;
@@ -375,6 +414,41 @@ pub fn run() -> Result<()> {
                 }
                 if clear_worker {
                     worker_rx = None;
+                }
+            }
+
+            if let Some(rx) = detail_worker_rx.as_ref() {
+                let mut clear_detail_worker = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(WorkerMsg::DetailLogsLoaded {
+                            unit,
+                            request_id,
+                            logs,
+                        }) => {
+                            let _ = detail.apply_loaded(request_id, &unit, logs);
+                            clear_detail_worker = true;
+                            break;
+                        }
+                        Ok(WorkerMsg::DetailLogsError {
+                            unit,
+                            request_id,
+                            error,
+                        }) => {
+                            let _ = detail.apply_error(request_id, &unit, error);
+                            clear_detail_worker = true;
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            clear_detail_worker = true;
+                            break;
+                        }
+                    }
+                }
+                if clear_detail_worker {
+                    detail_worker_rx = None;
                 }
             }
 
@@ -398,10 +472,9 @@ pub fn run() -> Result<()> {
                         }
                         KeyCode::Char('l') | KeyCode::Enter => {
                             if let Some(row) = rows.get(selected_idx) {
-                                detail_unit = row.unit.clone();
-                                detail_logs =
-                                    fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
-                                detail_scroll = 0;
+                                let request_id = detail.begin_for_unit(row.unit.clone());
+                                detail_worker_rx =
+                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
                                 view_mode = ViewMode::Detail;
                             }
                         }
@@ -411,24 +484,34 @@ pub fn run() -> Result<()> {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('r') => {
                             refresh_requested = true;
-                            detail_logs = fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
-                            detail_scroll = 0;
+                            if detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
+                                detail_worker_rx =
+                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
+                            }
                         }
                         KeyCode::Down => {
-                            if !detail_logs.is_empty() {
-                                detail_scroll =
-                                    std::cmp::min(detail_scroll + 1, detail_logs.len() - 1);
+                            if !detail.logs.is_empty() {
+                                detail.scroll =
+                                    std::cmp::min(detail.scroll + 1, detail.logs.len() - 1);
                             }
                         }
                         KeyCode::Up => {
-                            detail_scroll = detail_scroll.saturating_sub(1);
+                            detail.scroll = detail.scroll.saturating_sub(1);
                         }
                         KeyCode::Esc | KeyCode::Char('b') => {
                             view_mode = ViewMode::List;
                         }
                         KeyCode::Char('l') => {
-                            detail_logs = fetch_unit_logs(&detail_unit, 300).unwrap_or_default();
-                            detail_scroll = 0;
+                            if detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
+                                detail_worker_rx =
+                                    Some(spawn_detail_worker(detail.unit.clone(), request_id));
+                            }
                         }
                         _ => {}
                     },

@@ -1,0 +1,32 @@
+# Copyright (c) 2026 l5yth
+# SPDX-License-Identifier: Apache-2.0
+
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check
+
+      - name: Cargo test
+        run: cargo test

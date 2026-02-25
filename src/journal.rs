@@ -137,19 +137,26 @@ where
 }
 
 fn unit_from_journal_entry_for_scope(scope: Scope, value: &serde_json::Value) -> Option<&str> {
-    const SYSTEM_UNIT_FIELDS: [&str; 4] = [
+    const SYSTEM_UNIT_FIELDS: [&str; 7] = [
         "_SYSTEMD_UNIT",
         "UNIT",
+        "USER_UNIT",
         "OBJECT_SYSTEMD_UNIT",
+        "COREDUMP_UNIT",
+        "COREDUMP_USER_UNIT",
         "_SYSTEMD_USER_UNIT",
     ];
-    const USER_UNIT_FIELDS: [&str; 4] = [
+    const USER_UNIT_FIELDS: [&str; 8] = [
         "_SYSTEMD_USER_UNIT",
+        "USER_UNIT",
         "UNIT",
         "OBJECT_SYSTEMD_USER_UNIT",
+        "OBJECT_SYSTEMD_UNIT",
+        "COREDUMP_USER_UNIT",
+        "COREDUMP_UNIT",
         "_SYSTEMD_UNIT",
     ];
-    let fields = match scope {
+    let fields: &[&str] = match scope {
         Scope::System => &SYSTEM_UNIT_FIELDS,
         Scope::User => &USER_UNIT_FIELDS,
     };
@@ -547,6 +554,45 @@ mod tests {
         assert_eq!(
             logs.get("y.service").map(String::as_str),
             Some("object user field")
+        );
+    }
+
+    #[test]
+    fn parse_latest_logs_maps_coredump_and_user_unit_fields() {
+        let output = r#"{"COREDUMP_UNIT":"a.service","MESSAGE":"system coredump"}
+{"COREDUMP_USER_UNIT":"b.service","MESSAGE":"user coredump"}
+{"USER_UNIT":"c.service","MESSAGE":"user unit"}"#;
+        let wanted = HashSet::from([
+            "a.service".to_string(),
+            "b.service".to_string(),
+            "c.service".to_string(),
+        ]);
+        let system_logs = parse_latest_logs_from_journal_json(Scope::System, output, &wanted);
+        assert_eq!(
+            system_logs.get("a.service").map(String::as_str),
+            Some("system coredump")
+        );
+        assert_eq!(
+            system_logs.get("b.service").map(String::as_str),
+            Some("user coredump")
+        );
+        assert_eq!(
+            system_logs.get("c.service").map(String::as_str),
+            Some("user unit")
+        );
+
+        let user_logs = parse_latest_logs_from_journal_json(Scope::User, output, &wanted);
+        assert_eq!(
+            user_logs.get("a.service").map(String::as_str),
+            Some("system coredump")
+        );
+        assert_eq!(
+            user_logs.get("b.service").map(String::as_str),
+            Some("user coredump")
+        );
+        assert_eq!(
+            user_logs.get("c.service").map(String::as_str),
+            Some("user unit")
         );
     }
 

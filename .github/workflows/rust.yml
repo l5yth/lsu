@@ -34,6 +34,11 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Cargo doc (warnings denied)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items
+
   coverage:
     runs-on: ubuntu-latest
 
@@ -57,4 +62,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
+          codecov_yml_path: .github/codecov.yml
           fail_ci_if_error: false

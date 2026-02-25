@@ -3,6 +3,13 @@
 
 # lsu
 
+[![Rust](https://github.com/l5yth/lsu/actions/workflows/rust.yml/badge.svg)](https://github.com/l5yth/lsu/actions/workflows/rust.yml)
+[![Codecov](https://codecov.io/gh/l5yth/lsu/graph/badge.svg)](https://codecov.io/gh/l5yth/lsu)
+[![GitHub Release](https://img.shields.io/github/v/release/l5yth/lsu)](https://github.com/l5yth/lsu/releases)
+[![Crates.io](https://img.shields.io/crates/v/lsu.svg)](https://crates.io/crates/lsu)
+[![Top Language](https://img.shields.io/github/languages/top/l5yth/lsu)](https://github.com/l5yth/lsu)
+[![License: Apache-2.0](https://img.shields.io/github/license/l5yth/lsu)](https://github.com/l5yth/lsu/blob/main/LICENSE)
+
 `lsu` is a Rust terminal UI for viewing `systemd` service units and their journal.
 
 ![lsu terminal UI screenshot](assets/images/lsu-tui-overview.png)

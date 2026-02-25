@@ -62,4 +62,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
+          codecov_yml_path: .github/codecov.yml
           fail_ci_if_error: false

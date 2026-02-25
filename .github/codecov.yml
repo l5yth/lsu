@@ -1,0 +1,14 @@
+# Copyright (c) 2026 l5yth
+# SPDX-License-Identifier: Apache-2.0
+
+coverage:
+  status:
+    project:
+      default:
+        target: 100%
+        threshold: 10%
+    patch:
+      default:
+        target: 100%
+        threshold: 10%
+

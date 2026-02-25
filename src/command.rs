@@ -136,12 +136,13 @@ pub fn cmd_stdout_with_timeout(
         let _ = stderr.read_to_end(&mut out);
         out
     });
-    let deadline = Instant::now() + timeout;
+    let start = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if Instant::now() >= deadline {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             let _ = stdout_handle.join();
@@ -151,7 +152,7 @@ pub fn cmd_stdout_with_timeout(
                 timeout,
             });
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = timeout.saturating_sub(elapsed);
         thread::sleep(remaining.min(Duration::from_millis(25)));
     };
 

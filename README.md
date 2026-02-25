@@ -66,7 +66,7 @@ cargo run --release --
 ## Usage
 
 ```text
-lsu v0.1.1
+lsu v0.1.2
 apache v2 (c) 2026 l5yth
 
 Usage: lsu [OPTIONS]

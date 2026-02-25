@@ -141,6 +141,64 @@ mod tests {
     }
 
     #[test]
+    fn refresh_worker_emits_log_progress_for_non_empty_rows() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "all".to_string(),
+            show_help: false,
+            show_version: false,
+            scope: Scope::System,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("units msg")
+        {
+            WorkerMsg::UnitsLoaded(rows) => assert_eq!(rows.len(), 1),
+            other => panic!("expected UnitsLoaded, got {other:?}"),
+        }
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("progress msg")
+        {
+            WorkerMsg::LogsProgress { done, total, logs } => {
+                assert_eq!(done, 1);
+                assert_eq!(total, 1);
+                assert_eq!(logs.len(), 1);
+            }
+            other => panic!("expected LogsProgress, got {other:?}"),
+        }
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("finished msg")
+        {
+            WorkerMsg::Finished => {}
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_worker_emits_error_when_systemd_fetch_fails() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            scope: Scope::User,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("error msg")
+        {
+            WorkerMsg::Error(msg) => assert!(msg.contains("systemd test error")),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn detail_worker_emits_loaded_with_stubbed_backend() {
         let rx = spawn_detail_worker(Scope::System, "a.service".to_string(), 7);
         match rx
@@ -154,9 +212,29 @@ mod tests {
             } => {
                 assert_eq!(unit, "a.service");
                 assert_eq!(request_id, 7);
-                assert!(logs.is_empty());
+                assert_eq!(logs.len(), 1);
             }
             other => panic!("expected DetailLogsLoaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detail_worker_emits_error_when_backend_fails() {
+        let rx = spawn_detail_worker(Scope::System, "error.service".to_string(), 9);
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("detail error msg")
+        {
+            WorkerMsg::DetailLogsError {
+                unit,
+                request_id,
+                error,
+            } => {
+                assert_eq!(unit, "error.service");
+                assert_eq!(request_id, 9);
+                assert!(error.contains("detail journal test error"));
+            }
+            other => panic!("expected DetailLogsError, got {other:?}"),
         }
     }
 }

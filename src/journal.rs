@@ -17,7 +17,8 @@
 //! `journalctl` integration and log parsing helpers.
 //!
 //! Timeout behavior is deadline-based and coordinated around channel receive
-//! deadlines for streaming reads, with bounded channel waits for process exit.
+//! deadlines for streaming reads, with periodic `try_wait` checks for process
+//! completion timeouts.
 
 use anyhow::Result;
 #[cfg(not(test))]
@@ -204,62 +205,23 @@ fn remaining_timeout(deadline: Instant) -> Result<Duration> {
 
 #[cfg(not(test))]
 fn wait_child_with_timeout(mut child: std::process::Child, deadline: Instant) -> Result<()> {
-    let now = Instant::now();
-    let pid = child.id();
-    let (status_tx, status_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = status_tx.send(child.wait());
-    });
-    if now >= deadline {
-        let _ = kill_process(pid);
-        let _ = status_rx.recv_timeout(Duration::from_millis(250));
-        bail!(
-            "journalctl batch query timed out after {}s",
-            command_timeout().as_secs()
-        );
-    }
-    let timeout = deadline.saturating_duration_since(now);
-    match status_rx.recv_timeout(timeout) {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => bail!("journalctl exited unsuccessfully (status={status})"),
-        Ok(Err(e)) => Err(e.into()),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = kill_process(pid);
-            let _ = status_rx.recv_timeout(Duration::from_millis(250));
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            bail!("journalctl exited unsuccessfully (status={status})");
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
             bail!(
                 "journalctl batch query timed out after {}s",
                 command_timeout().as_secs()
             );
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            bail!("journalctl wait thread disconnected unexpectedly")
-        }
-    }
-}
-
-#[cfg(all(not(test), unix))]
-fn kill_process(pid: u32) -> std::io::Result<()> {
-    unsafe extern "C" {
-        fn kill(pid: i32, sig: i32) -> i32;
-    }
-    // SAFETY: forwarding to libc kill with validated integer conversion.
-    let rc = unsafe { kill(pid as i32, 9) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(all(not(test), not(unix)))]
-fn kill_process(pid: u32) -> std::io::Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("taskkill failed"))
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(remaining.min(Duration::from_millis(25)));
     }
 }
 
@@ -407,7 +369,13 @@ pub fn latest_log_lines_batch(
     _scope: Scope,
     _unit_names: &[String],
 ) -> Result<HashMap<String, String>> {
-    Ok(HashMap::new())
+    if _unit_names.iter().any(|u| u == "error.service") {
+        return Err(anyhow::anyhow!("journal test error"));
+    }
+    Ok(_unit_names
+        .iter()
+        .map(|u| (u.clone(), format!("log: {u}")))
+        .collect())
 }
 
 /// Parse `journalctl -o short-iso` output into `{time, log}` rows.
@@ -459,7 +427,13 @@ pub fn fetch_unit_logs(
     _unit: &str,
     _max_lines: usize,
 ) -> Result<Vec<DetailLogEntry>> {
-    Ok(Vec::new())
+    if _unit == "error.service" {
+        return Err(anyhow::anyhow!("detail journal test error"));
+    }
+    Ok(vec![DetailLogEntry {
+        time: "t".to_string(),
+        log: format!("detail: {_unit}"),
+    }])
 }
 
 #[cfg(test)]
@@ -503,7 +477,7 @@ mod tests {
     #[test]
     fn fetch_unit_logs_test_stub_returns_empty_vec() {
         let rows = fetch_unit_logs(Scope::System, "unit", 10).expect("stub should succeed");
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]
@@ -649,7 +623,7 @@ mod tests {
             &["a.service".to_string(), "b.service".to_string()],
         )
         .expect("stub should not fail");
-        assert!(logs.is_empty());
+        assert_eq!(logs.len(), 2);
     }
 
     #[test]
@@ -658,5 +632,19 @@ mod tests {
         // In test builds fallback stubs are always successful, so the function returns Ok.
         let unit_names = ["broken.service".to_string()];
         assert!(latest_log_lines_batch(Scope::System, &unit_names).is_ok());
+    }
+
+    #[test]
+    fn latest_log_lines_batch_stub_can_return_error_for_sentinel_unit() {
+        let err = latest_log_lines_batch(Scope::System, &["error.service".to_string()])
+            .expect_err("sentinel should fail");
+        assert!(err.to_string().contains("journal test error"));
+    }
+
+    #[test]
+    fn fetch_unit_logs_stub_can_return_error_for_sentinel_unit() {
+        let err =
+            fetch_unit_logs(Scope::System, "error.service", 20).expect_err("sentinel should fail");
+        assert!(err.to_string().contains("detail journal test error"));
     }
 }

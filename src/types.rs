@@ -22,11 +22,14 @@ use serde::Deserialize;
 /// Systemd unit scope.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope {
+    /// User-manager scope (`systemctl --user` / `journalctl --user`).
     User,
+    /// System-manager scope (`systemctl --system` / `journalctl --system`).
     System,
 }
 
 impl Scope {
+    /// Return the matching `systemctl`/`journalctl` scope flag.
     pub fn as_systemd_arg(&self) -> &'static str {
         match self {
             Self::System => "--system",
@@ -38,55 +41,80 @@ impl Scope {
 /// JSON row returned by `systemctl list-units --output=json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SystemctlUnit {
+    /// Unit name, e.g. `sshd.service`.
     pub unit: String,
+    /// Unit load state.
     pub load: String,
+    /// Unit active state.
     pub active: String,
+    /// Unit sub-state.
     pub sub: String,
+    /// Human-readable unit description.
     pub description: String,
 }
 
 /// Render-ready row for the list table.
 #[derive(Debug, Clone)]
 pub struct UnitRow {
+    /// Colored state marker rendered in the first table column.
     pub dot: char,
+    /// Style for the state marker.
     pub dot_style: Style,
+    /// Unit name.
     pub unit: String,
+    /// Load state.
     pub load: String,
+    /// Active state.
     pub active: String,
+    /// Sub-state.
     pub sub: String,
+    /// Description text.
     pub description: String,
+    /// Last-known log preview line.
     pub last_log: String,
 }
 
 /// A single timestamped entry in the detail log view.
 #[derive(Debug, Clone)]
 pub struct DetailLogEntry {
+    /// Timestamp value rendered in the detail view.
     pub time: String,
+    /// Log message text.
     pub log: String,
 }
 
 /// Background loading phase for the list view.
 #[derive(Debug, Clone, Copy)]
 pub enum LoadPhase {
+    /// No refresh currently running.
     Idle,
+    /// Unit list fetch is in progress.
     FetchingUnits,
+    /// Log batch fetch is in progress.
     FetchingLogs,
 }
 
 /// High-level screen mode.
 #[derive(Debug, Clone, Copy)]
 pub enum ViewMode {
+    /// Service list screen.
     List,
+    /// Per-unit detail log screen.
     Detail,
 }
 
 /// Detail pane state used by async log loading.
 #[derive(Debug, Clone, Default)]
 pub struct DetailState {
+    /// Unit currently shown in detail view.
     pub unit: String,
+    /// Loaded detail log entries.
     pub logs: Vec<DetailLogEntry>,
+    /// Vertical scroll offset in `logs`.
     pub scroll: usize,
+    /// Whether a detail fetch is in progress.
     pub loading: bool,
+    /// Last detail fetch error, if any.
     pub error: Option<String>,
     next_request_id: u64,
     active_request_id: Option<u64>,
@@ -147,23 +175,38 @@ impl DetailState {
 /// Messages sent from the background worker thread to the UI thread.
 #[derive(Debug)]
 pub enum WorkerMsg {
+    /// Unit rows were loaded and should replace/initialize the table.
     UnitsLoaded(Vec<UnitRow>),
+    /// A partial batch of list log updates is ready.
     LogsProgress {
+        /// Number of rows processed so far.
         done: usize,
+        /// Total rows targeted for this refresh.
         total: usize,
+        /// `(unit, last_log)` pairs for this batch.
         logs: Vec<(String, String)>,
     },
+    /// Detail logs loaded for a request id/unit pair.
     DetailLogsLoaded {
+        /// Unit for which the logs were requested.
         unit: String,
+        /// Monotonic request identifier.
         request_id: u64,
+        /// Loaded log entries.
         logs: Vec<DetailLogEntry>,
     },
+    /// Detail log request failed for a request id/unit pair.
     DetailLogsError {
+        /// Unit for which the logs were requested.
         unit: String,
+        /// Monotonic request identifier.
         request_id: u64,
+        /// Error text to show in the UI.
         error: String,
     },
+    /// Refresh worker finished all tasks.
     Finished,
+    /// Refresh worker failed with a terminal error.
     Error(String),
 }
 

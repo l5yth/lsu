@@ -36,14 +36,22 @@ const DEFAULT_CMD_TIMEOUT_SECS: u64 = 5;
 /// Structured subprocess failure modes.
 #[derive(Debug)]
 pub enum CommandExecError {
+    /// Process spawn/IO failure.
     Io(std::io::Error),
+    /// Process exceeded the configured timeout.
     Timeout {
+        /// Rendered command string.
         command: String,
+        /// Timeout value that was enforced.
         timeout: Duration,
     },
+    /// Process exited with a non-success status.
     NonZeroExit {
+        /// Rendered command string.
         command: String,
+        /// Exit status returned by the process.
         status: ExitStatus,
+        /// Captured stderr output.
         stderr: String,
     },
 }

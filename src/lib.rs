@@ -15,6 +15,7 @@
 */
 
 //! Library entry point for the `lsu` crate.
+#![deny(missing_docs)]
 
 pub mod app;
 pub mod cli;

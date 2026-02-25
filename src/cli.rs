@@ -24,11 +24,17 @@ use crate::types::Scope;
 /// Parsed command-line configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Filter applied to the unit `load` state.
     pub load_filter: String,
+    /// Filter applied to the unit `active` state.
     pub active_filter: String,
+    /// Filter applied to the unit `sub` state.
     pub sub_filter: String,
+    /// Whether help text should be printed and the process should exit.
     pub show_help: bool,
+    /// Whether version text should be printed and the process should exit.
     pub show_version: bool,
+    /// Target systemd scope (`system` or `user`).
     pub scope: Scope,
 }
 

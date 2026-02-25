@@ -24,7 +24,7 @@ use std::process::Command;
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
-use crate::{cli::Config, types::SystemctlUnit};
+use crate::{cli::Config, types::Scope, types::SystemctlUnit};
 
 /// Match one state value against a filter value (`all` means wildcard).
 pub fn filter_matches(value: &str, wanted: &str) -> bool {
@@ -45,10 +45,11 @@ pub fn should_fetch_all(cfg: &Config) -> bool {
 
 /// Query service units via `systemctl` JSON output.
 #[cfg(not(test))]
-pub fn fetch_services(show_all: bool) -> Result<Vec<SystemctlUnit>> {
+pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>> {
     let systemctl = resolve_trusted_binary("systemctl")?;
     let mut cmd = Command::new(systemctl);
     cmd.arg("list-units")
+        .arg(scope.as_systemd_arg())
         .arg("--no-pager")
         .arg("--plain")
         .arg("--type=service")
@@ -128,6 +129,7 @@ mod tests {
             refresh_secs: 0,
             show_help: false,
             show_version: false,
+            scope: Scope::System,
         };
         let units = vec![
             SystemctlUnit {
@@ -166,6 +168,7 @@ mod tests {
             refresh_secs: 0,
             show_help: false,
             show_version: false,
+            scope: Scope::System,
         };
         assert!(is_full_all(&all_cfg));
 
@@ -185,6 +188,7 @@ mod tests {
             refresh_secs: 0,
             show_help: false,
             show_version: false,
+            scope: Scope::System,
         };
         assert!(!should_fetch_all(&default_cfg));
 

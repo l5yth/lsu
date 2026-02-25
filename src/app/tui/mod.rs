@@ -405,7 +405,7 @@ pub fn run() -> Result<()> {
                             last_load_error = true;
                             last_load_error_message = Some(e);
                             status_line = format!(
-                                "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                "{mode_label}: {} | refresh failed (stale data) | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                 rows.len(),
                             );
                             phase = LoadPhase::Idle;

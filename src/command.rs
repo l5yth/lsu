@@ -220,14 +220,11 @@ fn resolve_trusted_binary_in(
         }
     }
 
-    match binary {
-        "systemctl" => Err(anyhow!("no systemctl command found, do use systemd?")),
-        "journalctl" => Err(anyhow!("no journalctl command found, do use systemd?")),
-        _ => Err(anyhow!(
-            "trusted '{}' not found in allowlisted directories ({})",
-            binary,
-            TRUSTED_DIRS.join(", ")
-        )),
+    if binary == "systemctl" {
+        Err(anyhow!("no systemctl command found, do use systemd?"))
+    } else {
+        // ALLOWED_BINARIES gate above leaves only journalctl here.
+        Err(anyhow!("no journalctl command found, do use systemd?"))
     }
 }
 

@@ -259,7 +259,7 @@ Options:
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
-      --user           Show units in user instead of system scope
+  -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright"
     )
@@ -334,7 +334,7 @@ where
                     .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
                 refresh_secs = parse_refresh_secs(&value)?;
             }
-            "--user" => {
+            "-u" | "--user" => {
                 scope = Scope::User;
             }
             _ => {
@@ -444,6 +444,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_args_user_scope_flag() {
+        let cfg = parse_args(vec!["lsu", "--user"]).expect("user scope should parse");
+        assert!(matches!(cfg.scope, Scope::User));
+
+        let cfg = parse_args(vec!["lsu", "-u"]).expect("short user scope should parse");
+        assert!(matches!(cfg.scope, Scope::User));
+    }
+
+    #[test]
     fn parse_args_rejects_unknown_arg() {
         let err = parse_args(vec!["lsu", "--bogus"]).expect_err("unknown arg should fail");
         assert!(err.to_string().contains("unknown argument"));
@@ -507,6 +516,12 @@ mod tests {
     fn usage_mentions_version_flag() {
         assert!(usage().contains("--version"));
         assert!(usage().contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn usage_mentions_user_scope_flag() {
+        assert!(usage().contains("--user"));
+        assert!(usage().contains("-u, --user"));
     }
 
     #[test]

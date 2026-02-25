@@ -261,4 +261,24 @@ mod tests {
         assert_eq!(state.scroll, 0);
         assert!(state.loading);
     }
+
+    #[test]
+    fn scope_maps_to_expected_systemd_args() {
+        assert_eq!(Scope::System.as_systemd_arg(), "--system");
+        assert_eq!(Scope::User.as_systemd_arg(), "--user");
+    }
+
+    #[test]
+    fn all_view_and_load_phase_variants_are_constructible() {
+        let list_mode = ViewMode::List;
+        let detail_mode = ViewMode::Detail;
+        let idle = LoadPhase::Idle;
+        let fetching_units = LoadPhase::FetchingUnits;
+        let fetching_logs = LoadPhase::FetchingLogs;
+        assert!(matches!(list_mode, ViewMode::List));
+        assert!(matches!(detail_mode, ViewMode::Detail));
+        assert!(matches!(idle, LoadPhase::Idle));
+        assert!(matches!(fetching_units, LoadPhase::FetchingUnits));
+        assert!(matches!(fetching_logs, LoadPhase::FetchingLogs));
+    }
 }

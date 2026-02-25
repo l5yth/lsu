@@ -9,8 +9,8 @@
 
 ## Dependencies
 
-- any GNU/Linux system with `systemd`
-- `systemctl` and `journalctl` available in `$PATH` obviosly
+- any GNU/Linux system with `systemd` obviously
+- `systemctl` and `journalctl` available in `$PATH`
 - Some current Rust stable toolchain (Rust 2024 edition, Cargo)
 
 Core crates: `ratatui`, `crossterm`, `serde`, `serde_json`, `anyhow`.
@@ -72,8 +72,8 @@ Options:
       --load <value>   Filter by load state (all, loaded, stub, not-found, bad-setting, error, merged, masked)
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
-      --user           Show units in user instead of system scope
   -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
+  -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright
 ```
@@ -84,10 +84,13 @@ Examples:
 lsu
 lsu --all
 lsu --all --refresh 5
+lsu --user
+lsu --user --all
 lsu --load failed
 lsu --active inactive
 lsu --sub exited
 lsu --load loaded --active inactive --sub dead
+lsu --user --load loaded --active active --sub running
 ```
 
 In-app keys:

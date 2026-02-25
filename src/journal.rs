@@ -47,8 +47,7 @@ pub fn last_log_line(scope: Scope, unit: &str) -> Result<String> {
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
     cmd.arg(scope.as_systemd_arg())
-        .arg("-u")
-        .arg(unit)
+        .arg(journal_match_for_scope(scope, unit))
         .arg("-n")
         .arg("1")
         .arg("--no-pager")
@@ -71,19 +70,21 @@ pub fn last_log_line(scope: Scope, unit: &str) -> Result<String> {
 
 #[cfg(test)]
 /// Test-build stub for one-line log lookup.
-pub fn last_log_line(_unit: &str) -> Result<String> {
+pub fn last_log_line(_scope: Scope, _unit: &str) -> Result<String> {
     Ok(String::new())
 }
 
 /// Parse newline-delimited `journalctl -o json` output and pick the latest non-empty message per unit.
 pub fn parse_latest_logs_from_journal_json(
+    scope: Scope,
     output: &str,
     wanted: &HashSet<String>,
 ) -> HashMap<String, String> {
-    parse_latest_logs_lines(output.lines(), wanted, usize::MAX)
+    parse_latest_logs_lines(scope, output.lines(), wanted, usize::MAX)
 }
 
 fn absorb_latest_log_line(
+    scope: Scope,
     line: &str,
     wanted: &HashSet<String>,
     latest: &mut HashMap<String, String>,
@@ -92,7 +93,7 @@ fn absorb_latest_log_line(
         return;
     };
 
-    let Some(unit) = value.get("_SYSTEMD_UNIT").and_then(|v| v.as_str()) else {
+    let Some(unit) = unit_from_journal_entry_for_scope(scope, &value) else {
         return;
     };
 
@@ -115,6 +116,7 @@ fn absorb_latest_log_line(
 
 /// Parse line-delimited journal JSON with an explicit max-line budget.
 pub fn parse_latest_logs_lines<'a, I>(
+    scope: Scope,
     lines: I,
     wanted: &HashSet<String>,
     max_lines: usize,
@@ -124,13 +126,33 @@ where
 {
     let mut latest = HashMap::new();
     for line in lines.into_iter().take(max_lines) {
-        absorb_latest_log_line(line, wanted, &mut latest);
+        absorb_latest_log_line(scope, line, wanted, &mut latest);
 
         if latest.len() == wanted.len() {
             break;
         }
     }
     latest
+}
+
+fn journal_match_for_scope(scope: Scope, unit: &str) -> String {
+    match scope {
+        Scope::System => format!("_SYSTEMD_UNIT={unit}"),
+        Scope::User => format!("_SYSTEMD_USER_UNIT={unit}"),
+    }
+}
+
+fn unit_from_journal_entry_for_scope(scope: Scope, value: &serde_json::Value) -> Option<&str> {
+    match scope {
+        Scope::System => value
+            .get("_SYSTEMD_UNIT")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("_SYSTEMD_USER_UNIT").and_then(|v| v.as_str())),
+        Scope::User => value
+            .get("_SYSTEMD_USER_UNIT")
+            .and_then(|v| v.as_str())
+            .or_else(|| value.get("_SYSTEMD_UNIT").and_then(|v| v.as_str())),
+    }
 }
 
 /// Compute a bounded line budget for one batched journal attempt.
@@ -193,7 +215,7 @@ fn stream_batch_latest_logs(
         .arg("-n")
         .arg(line_budget.to_string());
     for unit in unit_names {
-        cmd.arg("-u").arg(unit);
+        cmd.arg(journal_match_for_scope(scope, unit));
     }
 
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
@@ -241,7 +263,7 @@ fn stream_batch_latest_logs(
         };
         match line_rx.recv_timeout(timeout) {
             Ok(line) => {
-                absorb_latest_log_line(&line, &wanted, &mut found);
+                absorb_latest_log_line(scope, &line, &wanted, &mut found);
                 seen_lines += 1;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -352,8 +374,7 @@ pub fn fetch_unit_logs(scope: Scope, unit: &str, max_lines: usize) -> Result<Vec
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
     cmd.arg(scope.as_systemd_arg())
-        .arg("-u")
-        .arg(unit)
+        .arg(journal_match_for_scope(scope, unit))
         .arg("-n")
         .arg(max_lines.to_string())
         .arg("--no-pager")
@@ -366,7 +387,11 @@ pub fn fetch_unit_logs(scope: Scope, unit: &str, max_lines: usize) -> Result<Vec
 
 #[cfg(test)]
 /// Test-build stub for detail log fetching.
-pub fn fetch_unit_logs(_unit: &str, _max_lines: usize) -> Result<Vec<DetailLogEntry>> {
+pub fn fetch_unit_logs(
+    _scope: Scope,
+    _unit: &str,
+    _max_lines: usize,
+) -> Result<Vec<DetailLogEntry>> {
     Ok(Vec::new())
 }
 
@@ -380,7 +405,7 @@ mod tests {
 {"_SYSTEMD_UNIT":"b.service","MESSAGE":"newest b"}
 {"_SYSTEMD_UNIT":"a.service","MESSAGE":"older a"}"#;
         let wanted = HashSet::from(["a.service".to_string(), "b.service".to_string()]);
-        let logs = parse_latest_logs_from_journal_json(output, &wanted);
+        let logs = parse_latest_logs_from_journal_json(Scope::System, output, &wanted);
         assert_eq!(logs.get("a.service").map(String::as_str), Some("newest a"));
         assert_eq!(logs.get("b.service").map(String::as_str), Some("newest b"));
     }
@@ -392,7 +417,7 @@ mod tests {
 {"MESSAGE":"no unit"}
 {"_SYSTEMD_UNIT":"a.service","MESSAGE":"ok"}"#;
         let wanted = HashSet::from(["a.service".to_string()]);
-        let logs = parse_latest_logs_from_journal_json(output, &wanted);
+        let logs = parse_latest_logs_from_journal_json(Scope::System, output, &wanted);
         assert_eq!(logs.get("a.service").map(String::as_str), Some("ok"));
     }
 
@@ -404,13 +429,13 @@ mod tests {
 
     #[test]
     fn last_log_line_test_stub_returns_empty_string() {
-        let line = last_log_line("unit").expect("stub should succeed");
+        let line = last_log_line(Scope::System, "unit").expect("stub should succeed");
         assert_eq!(line, "");
     }
 
     #[test]
     fn fetch_unit_logs_test_stub_returns_empty_vec() {
-        let rows = fetch_unit_logs("unit", 10).expect("stub should succeed");
+        let rows = fetch_unit_logs(Scope::System, "unit", 10).expect("stub should succeed");
         assert!(rows.is_empty());
     }
 
@@ -463,11 +488,32 @@ mod tests {
             "b.service".to_string(),
             "c.service".to_string(),
         ]);
-        let logs = parse_latest_logs_lines(output.lines(), &wanted, 2);
+        let logs = parse_latest_logs_lines(Scope::System, output.lines(), &wanted, 2);
         assert_eq!(logs.len(), 2);
         assert!(logs.contains_key("a.service"));
         assert!(logs.contains_key("b.service"));
         assert!(!logs.contains_key("c.service"));
+    }
+
+    #[test]
+    fn parse_latest_logs_uses_user_unit_field_in_user_scope() {
+        let output = r#"{"_SYSTEMD_USER_UNIT":"x.service","MESSAGE":"x msg"}
+{"_SYSTEMD_UNIT":"x.service","MESSAGE":"system msg"}"#;
+        let wanted = HashSet::from(["x.service".to_string()]);
+        let logs = parse_latest_logs_from_journal_json(Scope::User, output, &wanted);
+        assert_eq!(logs.get("x.service").map(String::as_str), Some("x msg"));
+    }
+
+    #[test]
+    fn journal_match_for_scope_uses_user_unit_field_for_user_scope() {
+        assert_eq!(
+            journal_match_for_scope(Scope::User, "demo.service"),
+            "_SYSTEMD_USER_UNIT=demo.service"
+        );
+        assert_eq!(
+            journal_match_for_scope(Scope::System, "demo.service"),
+            "_SYSTEMD_UNIT=demo.service"
+        );
     }
 
     #[test]

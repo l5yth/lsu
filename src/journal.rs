@@ -47,7 +47,8 @@ pub fn last_log_line(scope: Scope, unit: &str) -> Result<String> {
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
     cmd.arg(scope.as_systemd_arg())
-        .arg(journal_match_for_scope(scope, unit))
+        .arg("-u")
+        .arg(unit)
         .arg("-n")
         .arg("1")
         .arg("--no-pager")
@@ -135,23 +136,37 @@ where
     latest
 }
 
-fn journal_match_for_scope(scope: Scope, unit: &str) -> String {
-    match scope {
-        Scope::System => format!("_SYSTEMD_UNIT={unit}"),
-        Scope::User => format!("_SYSTEMD_USER_UNIT={unit}"),
+fn unit_from_journal_entry_for_scope(scope: Scope, value: &serde_json::Value) -> Option<&str> {
+    const SYSTEM_UNIT_FIELDS: [&str; 4] = [
+        "_SYSTEMD_UNIT",
+        "UNIT",
+        "OBJECT_SYSTEMD_UNIT",
+        "_SYSTEMD_USER_UNIT",
+    ];
+    const USER_UNIT_FIELDS: [&str; 4] = [
+        "_SYSTEMD_USER_UNIT",
+        "UNIT",
+        "OBJECT_SYSTEMD_USER_UNIT",
+        "_SYSTEMD_UNIT",
+    ];
+    let fields = match scope {
+        Scope::System => &SYSTEM_UNIT_FIELDS,
+        Scope::User => &USER_UNIT_FIELDS,
+    };
+    for field in fields {
+        if let Some(unit) = value.get(field).and_then(|v| v.as_str()) {
+            return Some(unit);
+        }
     }
+    None
 }
 
-fn unit_from_journal_entry_for_scope(scope: Scope, value: &serde_json::Value) -> Option<&str> {
-    match scope {
-        Scope::System => value
-            .get("_SYSTEMD_UNIT")
-            .and_then(|v| v.as_str())
-            .or_else(|| value.get("_SYSTEMD_USER_UNIT").and_then(|v| v.as_str())),
-        Scope::User => value
-            .get("_SYSTEMD_USER_UNIT")
-            .and_then(|v| v.as_str())
-            .or_else(|| value.get("_SYSTEMD_UNIT").and_then(|v| v.as_str())),
+/// Build a journal query by repeating `-u <unit>` to preserve journalctl's native
+/// unit matching semantics, including manager-generated entries tied to a unit.
+#[cfg(not(test))]
+fn append_unit_matches(cmd: &mut Command, unit_names: &[String]) {
+    for unit in unit_names {
+        cmd.arg("-u").arg(unit);
     }
 }
 
@@ -214,9 +229,7 @@ fn stream_batch_latest_logs(
         .arg("-r")
         .arg("-n")
         .arg(line_budget.to_string());
-    for unit in unit_names {
-        cmd.arg(journal_match_for_scope(scope, unit));
-    }
+    append_unit_matches(&mut cmd, unit_names);
 
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let stdout = child.stdout.take().context("missing stdout pipe")?;
@@ -374,7 +387,8 @@ pub fn fetch_unit_logs(scope: Scope, unit: &str, max_lines: usize) -> Result<Vec
     let journalctl = resolve_trusted_binary("journalctl")?;
     let mut cmd = Command::new(journalctl);
     cmd.arg(scope.as_systemd_arg())
-        .arg(journal_match_for_scope(scope, unit))
+        .arg("-u")
+        .arg(unit)
         .arg("-n")
         .arg(max_lines.to_string())
         .arg("--no-pager")
@@ -505,14 +519,34 @@ mod tests {
     }
 
     #[test]
-    fn journal_match_for_scope_uses_user_unit_field_for_user_scope() {
+    fn parse_latest_logs_maps_manager_generated_system_unit_fields() {
+        let output = r#"{"UNIT":"x.service","MESSAGE":"unit field"}
+{"OBJECT_SYSTEMD_UNIT":"y.service","MESSAGE":"object field"}"#;
+        let wanted = HashSet::from(["x.service".to_string(), "y.service".to_string()]);
+        let logs = parse_latest_logs_from_journal_json(Scope::System, output, &wanted);
         assert_eq!(
-            journal_match_for_scope(Scope::User, "demo.service"),
-            "_SYSTEMD_USER_UNIT=demo.service"
+            logs.get("x.service").map(String::as_str),
+            Some("unit field")
         );
         assert_eq!(
-            journal_match_for_scope(Scope::System, "demo.service"),
-            "_SYSTEMD_UNIT=demo.service"
+            logs.get("y.service").map(String::as_str),
+            Some("object field")
+        );
+    }
+
+    #[test]
+    fn parse_latest_logs_maps_manager_generated_user_unit_fields() {
+        let output = r#"{"UNIT":"x.service","MESSAGE":"unit field"}
+{"OBJECT_SYSTEMD_USER_UNIT":"y.service","MESSAGE":"object user field"}"#;
+        let wanted = HashSet::from(["x.service".to_string(), "y.service".to_string()]);
+        let logs = parse_latest_logs_from_journal_json(Scope::User, output, &wanted);
+        assert_eq!(
+            logs.get("x.service").map(String::as_str),
+            Some("unit field")
+        );
+        assert_eq!(
+            logs.get("y.service").map(String::as_str),
+            Some("object user field")
         );
     }
 

@@ -23,13 +23,13 @@ pub const MODE_LABEL: &str = "services";
 pub fn list_status_text(rows: usize, logs_progress: Option<(usize, usize)>) -> String {
     match logs_progress {
         Some((done, total)) if done < total => format!(
-            "{MODE_LABEL}: {rows} | logs: {done}/{total} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+            "{MODE_LABEL}: {rows} | logs: {done}/{total} | ↑/↓: select | l/enter: inspect logs | r: refresh | q: quit"
         ),
         Some(_) => format!(
-            "{MODE_LABEL}: {rows} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+            "{MODE_LABEL}: {rows} | ↑/↓: select | l/enter: inspect logs | r: refresh | q: quit"
         ),
         None => format!(
-            "{MODE_LABEL}: {rows} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+            "{MODE_LABEL}: {rows} | ↑/↓: select | l/enter: inspect logs | r: refresh | q: quit"
         ),
     }
 }
@@ -37,14 +37,14 @@ pub fn list_status_text(rows: usize, logs_progress: Option<(usize, usize)>) -> S
 /// Build the stale-data status text after a failed refresh.
 pub fn stale_status_text(rows: usize) -> String {
     format!(
-        "{MODE_LABEL}: {rows} | refresh failed (stale data) | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+        "{MODE_LABEL}: {rows} | refresh failed (stale data) | ↑/↓: select | l/enter: inspect logs | r: refresh | q: quit"
     )
 }
 
 /// Build the loading status text shown while units are being fetched.
 pub fn loading_units_status_text() -> String {
     format!(
-        "{MODE_LABEL}: loading units... | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+        "{MODE_LABEL}: loading units... | ↑/↓: select | l/enter: inspect logs | r: refresh | q: quit"
     )
 }
 

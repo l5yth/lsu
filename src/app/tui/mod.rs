@@ -281,7 +281,23 @@ pub fn run() -> Result<()> {
                             f.render_stateful_widget(t, chunks[0], &mut list_table_state);
                         }
 
-                        let footer = Paragraph::new(status_line.clone())
+                        let footer_text = if !rows.is_empty()
+                            && last_load_error
+                            && matches!(phase, LoadPhase::Idle)
+                            && worker_rx.is_none()
+                        {
+                            match &last_load_error_message {
+                                Some(err) if !err.trim().is_empty() => format!(
+                                    "refresh failed (stale data): {} | q: quit | r: refresh",
+                                    err
+                                ),
+                                _ => "refresh failed (stale data) | q: quit | r: refresh"
+                                    .to_string(),
+                            }
+                        } else {
+                            status_line.clone()
+                        };
+                        let footer = Paragraph::new(footer_text)
                             .style(Style::default().fg(Color::DarkGray));
                         f.render_widget(footer, chunks[1]);
                     }

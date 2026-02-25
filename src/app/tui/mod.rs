@@ -14,35 +14,44 @@
    limitations under the License.
 */
 
-//! Runtime TUI implementation.
+//! Runtime TUI orchestration.
 //!
-//! This module is only compiled for non-test builds. Unit tests target the
-//! deterministic helper modules (`cli`, `systemd`, `rows`, `journal`, etc.).
+//! Responsibilities are split across submodules:
+//! - `workers`: background loading for list/detail data
+//! - `render`: frame rendering for list/detail views
+//! - `input`: key translation into view-independent commands
+//! - `state`: pure status text helpers
+
+mod input;
+mod render;
+mod state;
+mod workers;
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    prelude::*,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
-};
+use ratatui::{prelude::*, widgets::TableState};
 use std::{
     collections::HashMap,
     env, io,
-    sync::mpsc::{self, Receiver, TryRecvError},
-    thread,
+    sync::mpsc::{Receiver, TryRecvError},
     time::Duration,
 };
 
 use crate::{
-    cli::{Config, parse_args, usage, version_text},
-    journal::{fetch_unit_logs, latest_log_lines_batch},
-    rows::{build_rows, preserve_selection, seed_logs_from_previous, sort_rows},
-    systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
-    types::{DetailState, LoadPhase, Scope, UnitRow, ViewMode, WorkerMsg},
+    cli::{parse_args, usage, version_text},
+    rows::preserve_selection,
+    types::{DetailState, LoadPhase, UnitRow, ViewMode, WorkerMsg},
+};
+
+use self::{
+    input::{UiCommand, map_key},
+    render::draw_frame,
+    state::{MODE_LABEL, list_status_text, loading_units_status_text, stale_status_text},
+    workers::{spawn_detail_worker, spawn_refresh_worker},
 };
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -58,83 +67,6 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Res
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
     Ok(())
-}
-
-fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let fetch_all = should_fetch_all(&config);
-        let units =
-            match fetch_services(config.scope, fetch_all).map(|u| filter_services(u, &config)) {
-                Ok(units) => units,
-                Err(e) => {
-                    let _ = tx.send(WorkerMsg::Error(e.to_string()));
-                    return;
-                }
-            };
-
-        let mut rows = build_rows(units);
-        seed_logs_from_previous(&mut rows, &previous_rows);
-        sort_rows(&mut rows, is_full_all(&config));
-        let total = rows.len();
-
-        if tx.send(WorkerMsg::UnitsLoaded(rows.clone())).is_err() {
-            return;
-        }
-        if total == 0 {
-            let _ = tx.send(WorkerMsg::Finished);
-            return;
-        }
-
-        const LOG_BATCH_SIZE: usize = 12;
-        let mut done = 0usize;
-        while done < rows.len() {
-            let end = std::cmp::min(done + LOG_BATCH_SIZE, rows.len());
-            let units: Vec<String> = rows[done..end].iter().map(|r| r.unit.clone()).collect();
-            let logs = match latest_log_lines_batch(config.scope, &units) {
-                Ok(logs) => logs.into_iter().collect(),
-                Err(e) => {
-                    let _ = tx.send(WorkerMsg::Error(e.to_string()));
-                    return;
-                }
-            };
-            if tx
-                .send(WorkerMsg::LogsProgress {
-                    done: end,
-                    total,
-                    logs,
-                })
-                .is_err()
-            {
-                return;
-            }
-            done = end;
-        }
-
-        let _ = tx.send(WorkerMsg::Finished);
-    });
-    rx
-}
-
-fn spawn_detail_worker(scope: Scope, unit: String, request_id: u64) -> Receiver<WorkerMsg> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || match fetch_unit_logs(scope, &unit, 300) {
-        Ok(logs) => {
-            let _ = tx.send(WorkerMsg::DetailLogsLoaded {
-                unit,
-                request_id,
-                logs,
-            });
-        }
-        Err(e) => {
-            let _ = tx.send(WorkerMsg::DetailLogsError {
-                unit,
-                request_id,
-                error: e.to_string(),
-            });
-        }
-    });
-    rx
 }
 
 /// Run the interactive terminal UI.
@@ -165,173 +97,32 @@ pub fn run() -> Result<()> {
     let mut list_table_state = TableState::default();
     let mut view_mode = ViewMode::List;
     let mut detail = DetailState::default();
-    let mode_label = "services";
-    let mut status_line =
-        format!("{mode_label}: 0 | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh");
+    let mut status_line = list_status_text(0, None);
 
     let res = (|| -> Result<()> {
         loop {
             terminal.draw(|f| {
-                let size = f.area();
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(1), Constraint::Length(1)])
-                    .split(size);
-                match view_mode {
-                    ViewMode::List => {
-                        if rows.is_empty() {
-                            let block = Block::default()
-                                .borders(Borders::ALL)
-                                .title(format!("systemd {mode_label}"));
-                            let inner = block.inner(chunks[0]);
-                            f.render_widget(block, chunks[0]);
-
-                            let message = if matches!(phase, LoadPhase::Idle)
-                                && loaded_once
-                                && !last_load_error
-                                && worker_rx.is_none()
-                                && !refresh_requested
-                            {
-                                format!(
-                                    "       .----.   @   @\n     / .-\"-.`.  \\v/\n     | | '\\ \\ \\_/ )\n  ,-\\ `-.' /.'  /\n'---`----'----'\n\nNo units matched filters: load={}, active={}, sub={}.",
-                                    config.load_filter, config.active_filter, config.sub_filter
-                                )
-                            } else if last_load_error
-                                && matches!(phase, LoadPhase::Idle)
-                                && worker_rx.is_none()
-                            {
-                                match &last_load_error_message {
-                                    Some(err) if !err.trim().is_empty() => {
-                                        format!("Last refresh failed. Press r to retry.\n\n{err}")
-                                    }
-                                    _ => "Last refresh failed. Press r to retry.".to_string(),
-                                }
-                            } else {
-                                "Loading units and logs...".to_string()
-                            };
-                            let p = Paragraph::new(message)
-                                .alignment(Alignment::Center)
-                                .style(Style::default().fg(Color::DarkGray));
-                            f.render_widget(p, inner);
-                        } else {
-                            let header = Row::new([
-                                Cell::from(" "),
-                                Cell::from("unit"),
-                                Cell::from("load"),
-                                Cell::from("active"),
-                                Cell::from("sub"),
-                                Cell::from("description"),
-                                Cell::from("log (last line)"),
-                            ])
-                            .style(Style::default().add_modifier(Modifier::BOLD));
-
-                            let table_rows = rows.iter().map(|r| {
-                                Row::new([
-                                    Cell::from(r.dot.to_string()).style(r.dot_style),
-                                    Cell::from(r.unit.clone()),
-                                    Cell::from(r.load.clone()),
-                                    Cell::from(r.active.clone()),
-                                    Cell::from(r.sub.clone()),
-                                    Cell::from(r.description.clone()),
-                                    Cell::from(r.last_log.clone()),
-                                ])
-                            });
-
-                            let widths = [
-                                Constraint::Length(2),
-                                Constraint::Length(38),
-                                Constraint::Length(8),
-                                Constraint::Length(10),
-                                Constraint::Length(12),
-                                Constraint::Length(36),
-                                Constraint::Min(20),
-                            ];
-
-                            list_table_state.select((!rows.is_empty()).then_some(selected_idx));
-                            let t = Table::new(table_rows, widths)
-                                .header(header)
-                                .block(
-                                    Block::default()
-                                        .borders(Borders::ALL)
-                                        .title(format!("systemd {mode_label}")),
-                                )
-                                .row_highlight_style(
-                                    Style::default().add_modifier(Modifier::REVERSED),
-                                )
-                                .column_spacing(1);
-
-                            f.render_stateful_widget(t, chunks[0], &mut list_table_state);
-                        }
-
-                        let footer_text = if !rows.is_empty()
-                            && last_load_error
-                            && matches!(phase, LoadPhase::Idle)
-                            && worker_rx.is_none()
-                        {
-                            match &last_load_error_message {
-                                Some(err) if !err.trim().is_empty() => format!(
-                                    "refresh failed (stale data): {} | q: quit | r: refresh",
-                                    err
-                                ),
-                                _ => "refresh failed (stale data) | q: quit | r: refresh"
-                                    .to_string(),
-                            }
-                        } else {
-                            status_line.clone()
-                        };
-                        let footer = Paragraph::new(footer_text)
-                            .style(Style::default().fg(Color::DarkGray));
-                        f.render_widget(footer, chunks[1]);
-                    }
-                    ViewMode::Detail => {
-                        let unit_meta = rows
-                            .iter()
-                            .find(|r| r.unit == detail.unit)
-                            .map(|r| format!("unit: {}", r.unit))
-                            .unwrap_or_else(|| format!("unit: {}", detail.unit));
-
-                        let header = Row::new([Cell::from("time"), Cell::from("log")])
-                            .style(Style::default().add_modifier(Modifier::BOLD));
-                        let log_rows = detail
-                            .logs
-                            .iter()
-                            .skip(detail.scroll)
-                            .map(|entry| Row::new([entry.time.clone(), entry.log.clone()]));
-
-                        let table =
-                            Table::new(log_rows, [Constraint::Length(25), Constraint::Min(20)])
-                                .header(header)
-                                .block(
-                                    Block::default()
-                                        .borders(Borders::ALL)
-                                        .title(format!("logs for {}", detail.unit)),
-                                )
-                                .column_spacing(1);
-                        f.render_widget(table, chunks[0]);
-
-                        let detail_status = if detail.loading {
-                            "loading logs...".to_string()
-                        } else if let Some(err) = &detail.error {
-                            format!("error: {err}")
-                        } else {
-                            format!("logs: {}", detail.logs.len())
-                        };
-                        let footer = Paragraph::new(format!(
-                            "{} | {} | ↑/↓: scroll | b/esc: back | q: quit | r: refresh",
-                            unit_meta,
-                            detail_status
-                        ))
-                        .style(Style::default().fg(Color::DarkGray));
-                        f.render_widget(footer, chunks[1]);
-                    }
-                }
+                draw_frame(
+                    f,
+                    view_mode,
+                    MODE_LABEL,
+                    &rows,
+                    selected_idx,
+                    &mut list_table_state,
+                    &detail,
+                    phase,
+                    loaded_once,
+                    last_load_error,
+                    last_load_error_message.as_deref(),
+                    refresh_requested,
+                    &status_line,
+                    &config,
+                );
             })?;
 
             if refresh_requested && matches!(phase, LoadPhase::Idle) && worker_rx.is_none() {
                 phase = LoadPhase::FetchingUnits;
-                status_line = format!(
-                    "{mode_label}: loading units... | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
-                );
+                status_line = loading_units_status_text();
                 refresh_requested = false;
                 worker_rx = Some(spawn_refresh_worker(config.clone(), rows.clone()));
             }
@@ -353,16 +144,10 @@ pub fn run() -> Result<()> {
                                 .collect();
                             preserve_selection(previous_selected, &rows, &mut selected_idx);
                             if rows.is_empty() {
-                                status_line = format!(
-                                    "{mode_label}: 0 | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                );
+                                status_line = list_status_text(0, None);
                                 phase = LoadPhase::Idle;
                             } else {
-                                status_line = format!(
-                                    "{mode_label}: {} | logs: 0/{} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                    rows.len(),
-                                    rows.len(),
-                                );
+                                status_line = list_status_text(rows.len(), Some((0, rows.len())));
                                 phase = LoadPhase::FetchingLogs;
                             }
                         }
@@ -374,46 +159,26 @@ pub fn run() -> Result<()> {
                                     row.last_log = log;
                                 }
                             }
-                            if done >= total {
-                                status_line = format!(
-                                    "{mode_label}: {} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                    rows.len(),
-                                );
-                            } else {
-                                status_line = format!(
-                                    "{mode_label}: {} | logs: {}/{} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                    rows.len(),
-                                    done,
-                                    total,
-                                );
-                            }
+                            status_line = list_status_text(rows.len(), Some((done, total)));
                             phase = LoadPhase::FetchingLogs;
                         }
                         Ok(WorkerMsg::Finished) => {
                             phase = LoadPhase::Idle;
-                            status_line = format!(
-                                "{mode_label}: {} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                rows.len(),
-                            );
+                            status_line = list_status_text(rows.len(), None);
                             clear_worker = true;
                             break;
                         }
                         Ok(WorkerMsg::Error(e)) => {
                             last_load_error = true;
                             last_load_error_message = Some(e);
-                            status_line = format!(
-                                "{mode_label}: {} | refresh failed (stale data) | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
-                                rows.len(),
-                            );
+                            status_line = stale_status_text(rows.len());
                             phase = LoadPhase::Idle;
                             clear_worker = true;
                             break;
                         }
                         Ok(
                             WorkerMsg::DetailLogsLoaded { .. } | WorkerMsg::DetailLogsError { .. },
-                        ) => {
-                            continue;
-                        }
+                        ) => continue,
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
                             phase = LoadPhase::Idle;
@@ -465,75 +230,65 @@ pub fn run() -> Result<()> {
             if event::poll(Duration::from_millis(50))?
                 && let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
+                && let Some(cmd) = map_key(view_mode, k.code)
             {
-                match view_mode {
-                    ViewMode::List => match k.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('r') => {
-                            refresh_requested = true;
+                match cmd {
+                    UiCommand::Quit => break,
+                    UiCommand::Refresh => {
+                        refresh_requested = true;
+                        if matches!(view_mode, ViewMode::Detail)
+                            && detail_worker_rx.is_none()
+                            && !detail.loading
+                            && let Some(request_id) = detail.refresh()
+                        {
+                            detail_worker_rx = Some(spawn_detail_worker(
+                                config.scope,
+                                detail.unit.clone(),
+                                request_id,
+                            ));
                         }
-                        KeyCode::Down => {
+                    }
+                    UiCommand::MoveDown => match view_mode {
+                        ViewMode::List => {
                             if !rows.is_empty() {
                                 selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
                             }
                         }
-                        KeyCode::Up => {
-                            selected_idx = selected_idx.saturating_sub(1);
-                        }
-                        KeyCode::Char('l') | KeyCode::Enter => {
-                            if let Some(row) = rows.get(selected_idx) {
-                                let request_id = detail.begin_for_unit(row.unit.clone());
-                                detail_worker_rx = Some(spawn_detail_worker(
-                                    config.scope,
-                                    detail.unit.clone(),
-                                    request_id,
-                                ));
-                                view_mode = ViewMode::Detail;
-                            }
-                        }
-                        _ => {}
-                    },
-                    ViewMode::Detail => match k.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('r') => {
-                            refresh_requested = true;
-                            if detail_worker_rx.is_none()
-                                && !detail.loading
-                                && let Some(request_id) = detail.refresh()
-                            {
-                                detail_worker_rx = Some(spawn_detail_worker(
-                                    config.scope,
-                                    detail.unit.clone(),
-                                    request_id,
-                                ));
-                            }
-                        }
-                        KeyCode::Down => {
+                        ViewMode::Detail => {
                             if !detail.logs.is_empty() {
                                 detail.scroll =
                                     std::cmp::min(detail.scroll + 1, detail.logs.len() - 1);
                             }
                         }
-                        KeyCode::Up => {
-                            detail.scroll = detail.scroll.saturating_sub(1);
-                        }
-                        KeyCode::Esc | KeyCode::Char('b') => {
-                            view_mode = ViewMode::List;
-                        }
-                        KeyCode::Char('l') => {
-                            if detail_worker_rx.is_none()
-                                && !detail.loading
-                                && let Some(request_id) = detail.refresh()
-                            {
-                                detail_worker_rx = Some(spawn_detail_worker(
-                                    config.scope,
-                                    detail.unit.clone(),
-                                    request_id,
-                                ));
-                            }
-                        }
-                        _ => {}
                     },
+                    UiCommand::MoveUp => match view_mode {
+                        ViewMode::List => selected_idx = selected_idx.saturating_sub(1),
+                        ViewMode::Detail => detail.scroll = detail.scroll.saturating_sub(1),
+                    },
+                    UiCommand::OpenDetail => {
+                        if let Some(row) = rows.get(selected_idx) {
+                            let request_id = detail.begin_for_unit(row.unit.clone());
+                            detail_worker_rx = Some(spawn_detail_worker(
+                                config.scope,
+                                detail.unit.clone(),
+                                request_id,
+                            ));
+                            view_mode = ViewMode::Detail;
+                        }
+                    }
+                    UiCommand::BackToList => view_mode = ViewMode::List,
+                    UiCommand::RefreshDetail => {
+                        if detail_worker_rx.is_none()
+                            && !detail.loading
+                            && let Some(request_id) = detail.refresh()
+                        {
+                            detail_worker_rx = Some(spawn_detail_worker(
+                                config.scope,
+                                detail.unit.clone(),
+                                request_id,
+                            ));
+                        }
+                    }
                 }
             }
         }

@@ -15,6 +15,9 @@
 */
 
 //! Process execution helpers.
+//!
+//! Timeout behavior is deadline-based and channel-driven, so expiry is bounded
+//! but not sub-millisecond precise.
 
 use anyhow::{Result, anyhow, bail};
 use std::collections::{HashSet, hash_map::DefaultHasher};
@@ -24,7 +27,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const ALLOWED_BINARIES: [&str; 2] = ["systemctl", "journalctl"];
 const TRUSTED_DIRS: [&str; 5] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin"];
@@ -133,16 +136,17 @@ pub fn cmd_stdout_with_timeout(
         let _ = stderr.read_to_end(&mut out);
         out
     });
-    let start = Instant::now();
-
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+    let pid = child.id();
+    let (status_tx, status_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _ = status_tx.send(child.wait());
+    });
+    let status = match status_rx.recv_timeout(timeout) {
+        Ok(Ok(status)) => status,
+        Ok(Err(e)) => return Err(CommandExecError::Io(e)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            let _ = kill_process(pid);
+            let _ = status_rx.recv_timeout(Duration::from_millis(250));
             let _ = stdout_handle.join();
             let _ = stderr_handle.join();
             return Err(CommandExecError::Timeout {
@@ -150,8 +154,11 @@ pub fn cmd_stdout_with_timeout(
                 timeout,
             });
         }
-
-        thread::sleep(Duration::from_millis(10));
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(CommandExecError::Io(std::io::Error::other(
+                "wait thread disconnected",
+            )));
+        }
     };
 
     let stdout = stdout_handle.join().unwrap_or_default();
@@ -164,6 +171,32 @@ pub fn cmd_stdout_with_timeout(
         });
     }
     Ok(String::from_utf8_lossy(&stdout).to_string())
+}
+
+#[cfg(unix)]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    // SAFETY: forwarding to libc kill with validated integer conversion.
+    let rc = unsafe { kill(pid as i32, 9) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("taskkill failed"))
+    }
 }
 
 fn render_command(cmd: &Command) -> String {

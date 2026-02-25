@@ -15,6 +15,9 @@
 */
 
 //! `journalctl` integration and log parsing helpers.
+//!
+//! Timeout behavior is deadline-based and coordinated around channel receive
+//! deadlines for streaming reads, with bounded channel waits for process exit.
 
 use anyhow::Result;
 #[cfg(not(test))]
@@ -200,23 +203,63 @@ fn remaining_timeout(deadline: Instant) -> Result<Duration> {
 }
 
 #[cfg(not(test))]
-fn wait_child_with_timeout(child: &mut std::process::Child, deadline: Instant) -> Result<()> {
-    loop {
-        if let Some(status) = child.try_wait()? {
-            if status.success() {
-                return Ok(());
-            }
-            bail!("journalctl exited unsuccessfully (status={status})");
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+fn wait_child_with_timeout(mut child: std::process::Child, deadline: Instant) -> Result<()> {
+    let now = Instant::now();
+    let pid = child.id();
+    let (status_tx, status_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = status_tx.send(child.wait());
+    });
+    if now >= deadline {
+        let _ = kill_process(pid);
+        let _ = status_rx.recv_timeout(Duration::from_millis(250));
+        bail!(
+            "journalctl batch query timed out after {}s",
+            command_timeout().as_secs()
+        );
+    }
+    let timeout = deadline.saturating_duration_since(now);
+    match status_rx.recv_timeout(timeout) {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => bail!("journalctl exited unsuccessfully (status={status})"),
+        Ok(Err(e)) => Err(e.into()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = kill_process(pid);
+            let _ = status_rx.recv_timeout(Duration::from_millis(250));
             bail!(
                 "journalctl batch query timed out after {}s",
                 command_timeout().as_secs()
             );
         }
-        thread::sleep(Duration::from_millis(10));
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            bail!("journalctl wait thread disconnected unexpectedly")
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    // SAFETY: forwarding to libc kill with validated integer conversion.
+    let rc = unsafe { kill(pid as i32, 9) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(not(test), not(unix)))]
+fn kill_process(pid: u32) -> std::io::Result<()> {
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("taskkill failed"))
     }
 }
 
@@ -305,7 +348,7 @@ fn stream_batch_latest_logs(
         let _ = child.kill();
         let _ = child.wait();
     } else {
-        wait_child_with_timeout(&mut child, deadline)?;
+        wait_child_with_timeout(child, deadline)?;
     }
 
     let _ = read_handle.join();

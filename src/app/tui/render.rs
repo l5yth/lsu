@@ -134,11 +134,11 @@ pub fn draw_frame(
                     match last_load_error_message {
                         Some(err) if !err.trim().is_empty() => {
                             format!(
-                                "refresh failed (stale data): {} | q: quit | r: refresh",
+                                "refresh failed (stale data): {} | r: refresh | q: quit",
                                 err
                             )
                         }
-                        _ => "refresh failed (stale data) | q: quit | r: refresh".to_string(),
+                        _ => "refresh failed (stale data) | r: refresh | q: quit".to_string(),
                     }
                 } else {
                     status_line.to_string()
@@ -179,7 +179,7 @@ pub fn draw_frame(
                 format!("logs: {}", detail.logs.len())
             };
             let footer = Paragraph::new(format!(
-                "{} | {} | ↑/↓: scroll | b/esc: back | q: quit | r: refresh",
+                "{} | {} | ↑/↓: scroll | b/esc: back | r: refresh | q: quit",
                 unit_meta, detail_status
             ))
             .style(Style::default().fg(Color::DarkGray));

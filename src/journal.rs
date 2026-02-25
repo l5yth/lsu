@@ -15,6 +15,10 @@
 */
 
 //! `journalctl` integration and log parsing helpers.
+//!
+//! Timeout behavior is deadline-based and coordinated around channel receive
+//! deadlines for streaming reads, with periodic `try_wait` checks for process
+//! completion timeouts.
 
 use anyhow::Result;
 #[cfg(not(test))]
@@ -200,7 +204,7 @@ fn remaining_timeout(deadline: Instant) -> Result<Duration> {
 }
 
 #[cfg(not(test))]
-fn wait_child_with_timeout(child: &mut std::process::Child, deadline: Instant) -> Result<()> {
+fn wait_child_with_timeout(mut child: std::process::Child, deadline: Instant) -> Result<()> {
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
@@ -216,7 +220,8 @@ fn wait_child_with_timeout(child: &mut std::process::Child, deadline: Instant) -
                 command_timeout().as_secs()
             );
         }
-        thread::sleep(Duration::from_millis(10));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(remaining.min(Duration::from_millis(25)));
     }
 }
 
@@ -305,7 +310,7 @@ fn stream_batch_latest_logs(
         let _ = child.kill();
         let _ = child.wait();
     } else {
-        wait_child_with_timeout(&mut child, deadline)?;
+        wait_child_with_timeout(child, deadline)?;
     }
 
     let _ = read_handle.join();
@@ -360,8 +365,17 @@ pub fn latest_log_lines_batch(
 
 #[cfg(test)]
 /// Test-build stub for batched log lookup.
-pub fn latest_log_lines_batch(_unit_names: &[String]) -> Result<HashMap<String, String>> {
-    Ok(HashMap::new())
+pub fn latest_log_lines_batch(
+    _scope: Scope,
+    _unit_names: &[String],
+) -> Result<HashMap<String, String>> {
+    if _unit_names.iter().any(|u| u == "journal-error.service") {
+        return Err(anyhow::anyhow!("journal test error"));
+    }
+    Ok(_unit_names
+        .iter()
+        .map(|u| (u.clone(), format!("log: {u}")))
+        .collect())
 }
 
 /// Parse `journalctl -o short-iso` output into `{time, log}` rows.
@@ -413,7 +427,13 @@ pub fn fetch_unit_logs(
     _unit: &str,
     _max_lines: usize,
 ) -> Result<Vec<DetailLogEntry>> {
-    Ok(Vec::new())
+    if _unit == "error.service" {
+        return Err(anyhow::anyhow!("detail journal test error"));
+    }
+    Ok(vec![DetailLogEntry {
+        time: "t".to_string(),
+        log: format!("detail: {_unit}"),
+    }])
 }
 
 #[cfg(test)]
@@ -444,7 +464,7 @@ mod tests {
 
     #[test]
     fn latest_log_lines_batch_empty_input_returns_empty_map() {
-        let logs = latest_log_lines_batch(&[]).expect("stub should succeed");
+        let logs = latest_log_lines_batch(Scope::System, &[]).expect("stub should succeed");
         assert!(logs.is_empty());
     }
 
@@ -457,7 +477,7 @@ mod tests {
     #[test]
     fn fetch_unit_logs_test_stub_returns_empty_vec() {
         let rows = fetch_unit_logs(Scope::System, "unit", 10).expect("stub should succeed");
-        assert!(rows.is_empty());
+        assert_eq!(rows.len(), 1);
     }
 
     #[test]
@@ -598,9 +618,12 @@ mod tests {
 
     #[test]
     fn latest_log_lines_batch_stub_stays_ok_for_non_empty_input() {
-        let logs = latest_log_lines_batch(&["a.service".to_string(), "b.service".to_string()])
-            .expect("stub should not fail");
-        assert!(logs.is_empty());
+        let logs = latest_log_lines_batch(
+            Scope::System,
+            &["a.service".to_string(), "b.service".to_string()],
+        )
+        .expect("stub should not fail");
+        assert_eq!(logs.len(), 2);
     }
 
     #[test]
@@ -608,6 +631,20 @@ mod tests {
         // This documents the intended behavior: per-unit fallback errors must not abort the batch.
         // In test builds fallback stubs are always successful, so the function returns Ok.
         let unit_names = ["broken.service".to_string()];
-        assert!(latest_log_lines_batch(&unit_names).is_ok());
+        assert!(latest_log_lines_batch(Scope::System, &unit_names).is_ok());
+    }
+
+    #[test]
+    fn latest_log_lines_batch_stub_can_return_error_for_sentinel_unit() {
+        let err = latest_log_lines_batch(Scope::System, &["journal-error.service".to_string()])
+            .expect_err("sentinel should fail");
+        assert!(err.to_string().contains("journal test error"));
+    }
+
+    #[test]
+    fn fetch_unit_logs_stub_can_return_error_for_sentinel_unit() {
+        let err =
+            fetch_unit_logs(Scope::System, "error.service", 20).expect_err("sentinel should fail");
+        assert!(err.to_string().contains("detail journal test error"));
     }
 }

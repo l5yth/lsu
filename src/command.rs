@@ -15,6 +15,9 @@
 */
 
 //! Process execution helpers.
+//!
+//! Timeout behavior is deadline-based with periodic `try_wait` checks, so
+//! expiry is bounded but not sub-millisecond precise.
 
 use anyhow::{Result, anyhow, bail};
 use std::collections::{HashSet, hash_map::DefaultHasher};
@@ -134,13 +137,12 @@ pub fn cmd_stdout_with_timeout(
         out
     });
     let start = Instant::now();
-
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-
-        if start.elapsed() >= timeout {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
             let _ = child.kill();
             let _ = child.wait();
             let _ = stdout_handle.join();
@@ -150,8 +152,8 @@ pub fn cmd_stdout_with_timeout(
                 timeout,
             });
         }
-
-        thread::sleep(Duration::from_millis(10));
+        let remaining = timeout.saturating_sub(elapsed);
+        thread::sleep(remaining.min(Duration::from_millis(25)));
     };
 
     let stdout = stdout_handle.join().unwrap_or_default();

@@ -17,6 +17,8 @@
 //! `systemctl` integration and service filtering logic.
 
 use anyhow::Result;
+#[cfg(test)]
+use anyhow::anyhow;
 #[cfg(not(test))]
 use anyhow::{Context, bail};
 #[cfg(not(test))]
@@ -78,7 +80,28 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
 
 #[cfg(test)]
 /// Test-build stub for `fetch_services`; runtime I/O path is tested in integration environments.
-pub fn fetch_services(_show_all: bool) -> Result<Vec<SystemctlUnit>> {
+pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>> {
+    if matches!(scope, Scope::User) {
+        return Err(anyhow!("systemd test error"));
+    }
+    if show_all {
+        return Ok(vec![
+            SystemctlUnit {
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: "A".to_string(),
+            },
+            SystemctlUnit {
+                unit: "journal-error.service".to_string(),
+                load: "loaded".to_string(),
+                active: "inactive".to_string(),
+                sub: "dead".to_string(),
+                description: "Err".to_string(),
+            },
+        ]);
+    }
     Ok(Vec::new())
 }
 
@@ -222,7 +245,19 @@ mod tests {
 
     #[test]
     fn fetch_services_test_stub_returns_empty() {
-        let units = fetch_services(false).expect("stub should succeed");
+        let units = fetch_services(Scope::System, false).expect("stub should succeed");
         assert!(units.is_empty());
+    }
+
+    #[test]
+    fn fetch_services_test_stub_returns_row_for_show_all() {
+        let units = fetch_services(Scope::System, true).expect("stub should succeed");
+        assert_eq!(units.len(), 2);
+    }
+
+    #[test]
+    fn fetch_services_test_stub_errors_for_user_scope() {
+        let err = fetch_services(Scope::User, false).expect_err("stub should fail");
+        assert!(err.to_string().contains("systemd test error"));
     }
 }

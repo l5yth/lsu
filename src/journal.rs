@@ -369,7 +369,7 @@ pub fn latest_log_lines_batch(
     _scope: Scope,
     _unit_names: &[String],
 ) -> Result<HashMap<String, String>> {
-    if _unit_names.iter().any(|u| u == "error.service") {
+    if _unit_names.iter().any(|u| u == "journal-error.service") {
         return Err(anyhow::anyhow!("journal test error"));
     }
     Ok(_unit_names
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn latest_log_lines_batch_stub_can_return_error_for_sentinel_unit() {
-        let err = latest_log_lines_batch(Scope::System, &["error.service".to_string()])
+        let err = latest_log_lines_batch(Scope::System, &["journal-error.service".to_string()])
             .expect_err("sentinel should fail");
         assert!(err.to_string().contains("journal test error"));
     }

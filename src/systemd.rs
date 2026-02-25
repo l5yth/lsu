@@ -85,13 +85,22 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
         return Err(anyhow!("systemd test error"));
     }
     if show_all {
-        return Ok(vec![SystemctlUnit {
-            unit: "a.service".to_string(),
-            load: "loaded".to_string(),
-            active: "active".to_string(),
-            sub: "running".to_string(),
-            description: "A".to_string(),
-        }]);
+        return Ok(vec![
+            SystemctlUnit {
+                unit: "a.service".to_string(),
+                load: "loaded".to_string(),
+                active: "active".to_string(),
+                sub: "running".to_string(),
+                description: "A".to_string(),
+            },
+            SystemctlUnit {
+                unit: "journal-error.service".to_string(),
+                load: "loaded".to_string(),
+                active: "inactive".to_string(),
+                sub: "dead".to_string(),
+                description: "Err".to_string(),
+            },
+        ]);
     }
     Ok(Vec::new())
 }
@@ -243,7 +252,7 @@ mod tests {
     #[test]
     fn fetch_services_test_stub_returns_row_for_show_all() {
         let units = fetch_services(Scope::System, true).expect("stub should succeed");
-        assert_eq!(units.len(), 1);
+        assert_eq!(units.len(), 2);
     }
 
     #[test]

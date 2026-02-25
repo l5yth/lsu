@@ -94,4 +94,21 @@ mod tests {
             Some(UiCommand::RefreshDetail)
         );
     }
+
+    #[test]
+    fn map_key_maps_quit_refresh_and_unknown_keys() {
+        assert_eq!(
+            map_key(ViewMode::List, KeyCode::Char('q')),
+            Some(UiCommand::Quit)
+        );
+        assert_eq!(
+            map_key(ViewMode::List, KeyCode::Char('r')),
+            Some(UiCommand::Refresh)
+        );
+        assert_eq!(
+            map_key(ViewMode::Detail, KeyCode::Char('r')),
+            Some(UiCommand::Refresh)
+        );
+        assert_eq!(map_key(ViewMode::Detail, KeyCode::Enter), None);
+    }
 }

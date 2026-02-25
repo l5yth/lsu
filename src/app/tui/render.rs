@@ -277,4 +277,82 @@ mod tests {
             })
             .expect("draw");
     }
+
+    #[test]
+    fn draw_frame_renders_empty_no_match_and_error_states() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    false,
+                    None,
+                    false,
+                    "services: 0",
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    true,
+                    Some("boom"),
+                    false,
+                    "services: 0",
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn draw_frame_renders_stale_footer_with_rows() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    true,
+                    Some("stale"),
+                    false,
+                    "services: 1",
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
 }

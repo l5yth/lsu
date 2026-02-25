@@ -42,7 +42,6 @@ pub fn stale_status_text(rows: usize) -> String {
 }
 
 /// Build the loading status text shown while units are being fetched.
-#[cfg(not(test))]
 pub fn loading_units_status_text() -> String {
     format!(
         "{MODE_LABEL}: loading units... | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
@@ -64,5 +63,11 @@ mod tests {
     fn stale_status_text_mentions_stale_data() {
         let s = stale_status_text(4);
         assert!(s.contains("refresh failed (stale data)"));
+    }
+
+    #[test]
+    fn loading_units_status_text_mentions_loading() {
+        let s = loading_units_status_text();
+        assert!(s.contains("loading units"));
     }
 }

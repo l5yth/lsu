@@ -31,7 +31,7 @@ src_unpack() {
 }
 
 src_compile() {
-	cargo_src_compile --release --bin lsu
+	cargo_src_compile --bin lsu
 }
 
 src_install() {

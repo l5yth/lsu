@@ -220,11 +220,15 @@ fn resolve_trusted_binary_in(
         }
     }
 
-    Err(anyhow!(
-        "trusted '{}' not found in allowlisted directories ({})",
-        binary,
-        TRUSTED_DIRS.join(", ")
-    ))
+    match binary {
+        "systemctl" => Err(anyhow!("no systemctl command found, do use systemd?")),
+        "journalctl" => Err(anyhow!("no journalctl command found, do use systemd?")),
+        _ => Err(anyhow!(
+            "trusted '{}' not found in allowlisted directories ({})",
+            binary,
+            TRUSTED_DIRS.join(", ")
+        )),
+    }
 }
 
 fn canonical_trusted_roots(trusted_dirs: &[PathBuf], path_entries: &[PathBuf]) -> Vec<PathBuf> {
@@ -486,7 +490,10 @@ mod tests {
         )
         .expect_err("untrusted binary should be rejected");
 
-        assert!(err.to_string().contains("trusted 'journalctl' not found"));
+        assert!(
+            err.to_string()
+                .contains("no journalctl command found, do use systemd?")
+        );
         let _ = fs::remove_dir_all(untrusted);
     }
 
@@ -508,7 +515,10 @@ mod tests {
             std::slice::from_ref(&trusted),
         )
         .expect_err("non-executable path must be rejected");
-        assert!(err.to_string().contains("trusted 'systemctl' not found"));
+        assert!(
+            err.to_string()
+                .contains("no systemctl command found, do use systemd?")
+        );
         let _ = fs::remove_dir_all(trusted);
     }
 
@@ -532,7 +542,10 @@ mod tests {
     fn resolve_trusted_binary_errors_when_missing() {
         let err = resolve_trusted_binary_in("systemctl", Some(OsStr::new("").to_owned()), &[])
             .expect_err("missing binary should fail");
-        assert!(err.to_string().contains("trusted 'systemctl' not found"));
+        assert!(
+            err.to_string()
+                .contains("no systemctl command found, do use systemd?")
+        );
     }
 
     #[test]
@@ -563,7 +576,10 @@ mod tests {
             std::slice::from_ref(&trusted),
         )
         .expect_err("symlink to wrong binary name must be rejected");
-        assert!(err.to_string().contains("trusted 'systemctl' not found"));
+        assert!(
+            err.to_string()
+                .contains("no systemctl command found, do use systemd?")
+        );
 
         let _ = fs::remove_dir_all(trusted);
         let _ = fs::remove_dir_all(untrusted);

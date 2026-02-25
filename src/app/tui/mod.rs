@@ -162,6 +162,7 @@ pub fn run() -> Result<()> {
     let mut detail_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut loaded_once = false;
     let mut last_load_error = false;
+    let mut last_load_error_message: Option<String> = None;
 
     let mut rows: Vec<UnitRow> = Vec::new();
     let mut row_index_by_unit: HashMap<String, usize> = HashMap::new();
@@ -217,7 +218,12 @@ pub fn run() -> Result<()> {
                                 && matches!(phase, LoadPhase::Idle)
                                 && worker_rx.is_none()
                             {
-                                "Last refresh failed. Press r to retry.".to_string()
+                                match &last_load_error_message {
+                                    Some(err) if !err.trim().is_empty() => {
+                                        format!("Last refresh failed. Press r to retry.\n\n{err}")
+                                    }
+                                    _ => "Last refresh failed. Press r to retry.".to_string(),
+                                }
                             } else {
                                 "Loading units and logs...".to_string()
                             };
@@ -340,6 +346,7 @@ pub fn run() -> Result<()> {
                         Ok(WorkerMsg::UnitsLoaded(new_rows)) => {
                             loaded_once = true;
                             last_load_error = false;
+                            last_load_error_message = None;
                             let previous_selected = rows.get(selected_idx).map(|r| r.unit.clone());
                             rows = new_rows;
                             row_index_by_unit = rows
@@ -396,8 +403,10 @@ pub fn run() -> Result<()> {
                         }
                         Ok(WorkerMsg::Error(e)) => {
                             last_load_error = true;
+                            last_load_error_message = Some(e);
                             status_line = format!(
-                                "error: {e} | auto-refresh: {refresh_label} | q: quit | r: refresh",
+                                "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                rows.len(),
                             );
                             phase = LoadPhase::Idle;
                             clear_worker = true;

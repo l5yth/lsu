@@ -40,8 +40,8 @@ fn command_runtime_success_and_non_zero_contracts() {
 fn command_runtime_timeout_contract() {
     let mut slow = Command::new("sh");
     slow.arg("-c").arg("sleep 1; printf too-late");
-    let err = cmd_stdout_with_timeout(&mut slow, Duration::from_millis(50))
-        .expect_err("timeout command");
+    let err =
+        cmd_stdout_with_timeout(&mut slow, Duration::from_millis(50)).expect_err("timeout command");
     match err {
         CommandExecError::Timeout { timeout, .. } => {
             assert_eq!(timeout, Duration::from_millis(50));

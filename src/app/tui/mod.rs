@@ -27,13 +27,18 @@ mod render;
 mod state;
 mod workers;
 
-use anyhow::{Context, Result};
+#[cfg(not(test))]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(not(test))]
 use crossterm::{
     event::{self, Event, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+#[cfg(not(test))]
 use ratatui::{prelude::*, widgets::TableState};
+#[cfg(not(test))]
 use std::{
     collections::HashMap,
     env, io,
@@ -41,12 +46,14 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(test))]
 use crate::{
     cli::{parse_args, usage, version_text},
     rows::preserve_selection,
     types::{DetailState, LoadPhase, UnitRow, ViewMode, WorkerMsg},
 };
 
+#[cfg(not(test))]
 use self::{
     input::{UiCommand, map_key},
     render::draw_frame,
@@ -54,6 +61,7 @@ use self::{
     workers::{spawn_detail_worker, spawn_refresh_worker},
 };
 
+#[cfg(not(test))]
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode().context("enable_raw_mode failed")?;
     let mut stdout = io::stdout();
@@ -62,6 +70,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     Ok(Terminal::new(backend)?)
 }
 
+#[cfg(not(test))]
 fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
@@ -70,6 +79,7 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Res
 }
 
 /// Run the interactive terminal UI.
+#[cfg(not(test))]
 pub fn run() -> Result<()> {
     let config = parse_args(env::args())?;
     if config.show_version {
@@ -297,4 +307,10 @@ pub fn run() -> Result<()> {
 
     restore_terminal(terminal)?;
     res
+}
+
+#[cfg(test)]
+/// Test-build runner stub for the TUI runtime module.
+pub fn run() -> Result<()> {
+    Ok(())
 }

@@ -19,7 +19,6 @@
 //! In test builds we expose a lightweight stub to keep unit-test coverage
 //! focused on deterministic logic modules rather than terminal runtime I/O.
 
-#[cfg(not(test))]
 pub mod tui;
 
 #[cfg(not(test))]

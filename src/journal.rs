@@ -237,7 +237,7 @@ fn wait_child_with_timeout(mut child: std::process::Child, deadline: Instant) ->
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
 fn kill_process(pid: u32) -> std::io::Result<()> {
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
@@ -403,7 +403,10 @@ pub fn latest_log_lines_batch(
 
 #[cfg(test)]
 /// Test-build stub for batched log lookup.
-pub fn latest_log_lines_batch(_unit_names: &[String]) -> Result<HashMap<String, String>> {
+pub fn latest_log_lines_batch(
+    _scope: Scope,
+    _unit_names: &[String],
+) -> Result<HashMap<String, String>> {
     Ok(HashMap::new())
 }
 
@@ -487,7 +490,7 @@ mod tests {
 
     #[test]
     fn latest_log_lines_batch_empty_input_returns_empty_map() {
-        let logs = latest_log_lines_batch(&[]).expect("stub should succeed");
+        let logs = latest_log_lines_batch(Scope::System, &[]).expect("stub should succeed");
         assert!(logs.is_empty());
     }
 
@@ -641,8 +644,11 @@ mod tests {
 
     #[test]
     fn latest_log_lines_batch_stub_stays_ok_for_non_empty_input() {
-        let logs = latest_log_lines_batch(&["a.service".to_string(), "b.service".to_string()])
-            .expect("stub should not fail");
+        let logs = latest_log_lines_batch(
+            Scope::System,
+            &["a.service".to_string(), "b.service".to_string()],
+        )
+        .expect("stub should not fail");
         assert!(logs.is_empty());
     }
 
@@ -651,6 +657,6 @@ mod tests {
         // This documents the intended behavior: per-unit fallback errors must not abort the batch.
         // In test builds fallback stubs are always successful, so the function returns Ok.
         let unit_names = ["broken.service".to_string()];
-        assert!(latest_log_lines_batch(&unit_names).is_ok());
+        assert!(latest_log_lines_batch(Scope::System, &unit_names).is_ok());
     }
 }

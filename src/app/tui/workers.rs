@@ -107,3 +107,56 @@ pub fn spawn_detail_worker(scope: Scope, unit: String, request_id: u64) -> Recei
     });
     rx
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn refresh_worker_emits_units_then_finished_with_stubbed_backends() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            scope: Scope::System,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("first msg")
+        {
+            WorkerMsg::UnitsLoaded(rows) => assert!(rows.is_empty()),
+            other => panic!("expected UnitsLoaded, got {other:?}"),
+        }
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("second msg")
+        {
+            WorkerMsg::Finished => {}
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detail_worker_emits_loaded_with_stubbed_backend() {
+        let rx = spawn_detail_worker(Scope::System, "a.service".to_string(), 7);
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("detail msg")
+        {
+            WorkerMsg::DetailLogsLoaded {
+                unit,
+                request_id,
+                logs,
+            } => {
+                assert_eq!(unit, "a.service");
+                assert_eq!(request_id, 7);
+                assert!(logs.is_empty());
+            }
+            other => panic!("expected DetailLogsLoaded, got {other:?}"),
+        }
+    }
+}

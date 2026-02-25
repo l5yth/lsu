@@ -78,7 +78,7 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
 
 #[cfg(test)]
 /// Test-build stub for `fetch_services`; runtime I/O path is tested in integration environments.
-pub fn fetch_services(_show_all: bool) -> Result<Vec<SystemctlUnit>> {
+pub fn fetch_services(_scope: Scope, _show_all: bool) -> Result<Vec<SystemctlUnit>> {
     Ok(Vec::new())
 }
 
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn fetch_services_test_stub_returns_empty() {
-        let units = fetch_services(false).expect("stub should succeed");
+        let units = fetch_services(Scope::System, false).expect("stub should succeed");
         assert!(units.is_empty());
     }
 }

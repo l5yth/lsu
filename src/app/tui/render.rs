@@ -187,3 +187,94 @@ pub fn draw_frame(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_config() -> Config {
+        Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            scope: crate::types::Scope::System,
+        }
+    }
+
+    fn sample_row() -> UnitRow {
+        UnitRow {
+            dot: '.',
+            dot_style: Style::default(),
+            unit: "a.service".to_string(),
+            load: "loaded".to_string(),
+            active: "active".to_string(),
+            sub: "running".to_string(),
+            description: "A".to_string(),
+            last_log: "log".to_string(),
+        }
+    }
+
+    #[test]
+    fn draw_frame_renders_list_mode_with_rows() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    false,
+                    None,
+                    false,
+                    "services: 1",
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn draw_frame_renders_detail_mode() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let mut detail = DetailState::default();
+        detail.unit = "a.service".to_string();
+        detail.logs.push(crate::types::DetailLogEntry {
+            time: "t".to_string(),
+            log: "line".to_string(),
+        });
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::Detail,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    false,
+                    None,
+                    false,
+                    "services: 1",
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+}

@@ -42,6 +42,7 @@ pub fn stale_status_text(rows: usize) -> String {
 }
 
 /// Build the loading status text shown while units are being fetched.
+#[cfg(not(test))]
 pub fn loading_units_status_text() -> String {
     format!(
         "{MODE_LABEL}: loading units... | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"

@@ -145,6 +145,7 @@ impl DetailState {
 }
 
 /// Messages sent from the background worker thread to the UI thread.
+#[derive(Debug)]
 pub enum WorkerMsg {
     UnitsLoaded(Vec<UnitRow>),
     LogsProgress {

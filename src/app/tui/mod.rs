@@ -34,7 +34,7 @@ use std::{
     env, io,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crate::{
@@ -151,12 +151,6 @@ pub fn run() -> Result<()> {
 
     let mut terminal = setup_terminal()?;
 
-    let refresh_every = if config.refresh_secs == 0 {
-        None
-    } else {
-        Some(Duration::from_secs(config.refresh_secs))
-    };
-    let mut last_refresh = Instant::now();
     let mut refresh_requested = true;
     let mut phase = LoadPhase::Idle;
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
@@ -172,24 +166,11 @@ pub fn run() -> Result<()> {
     let mut view_mode = ViewMode::List;
     let mut detail = DetailState::default();
     let mode_label = "services";
-    let refresh_label = if config.refresh_secs == 0 {
-        "off".to_string()
-    } else {
-        format!("{}s", config.refresh_secs)
-    };
-    let mut status_line = format!(
-        "{mode_label}: 0 | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
-    );
+    let mut status_line =
+        format!("{mode_label}: 0 | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh");
 
     let res = (|| -> Result<()> {
         loop {
-            let auto_due = refresh_every
-                .map(|every| last_refresh.elapsed() >= every)
-                .unwrap_or(false);
-            if auto_due {
-                refresh_requested = true;
-            }
-
             terminal.draw(|f| {
                 let size = f.area();
                 let chunks = Layout::default()
@@ -349,10 +330,9 @@ pub fn run() -> Result<()> {
             if refresh_requested && matches!(phase, LoadPhase::Idle) && worker_rx.is_none() {
                 phase = LoadPhase::FetchingUnits;
                 status_line = format!(
-                    "{mode_label}: loading units... | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
+                    "{mode_label}: loading units... | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh"
                 );
                 refresh_requested = false;
-                last_refresh = Instant::now();
                 worker_rx = Some(spawn_refresh_worker(config.clone(), rows.clone()));
             }
 
@@ -374,12 +354,12 @@ pub fn run() -> Result<()> {
                             preserve_selection(previous_selected, &rows, &mut selected_idx);
                             if rows.is_empty() {
                                 status_line = format!(
-                                    "{mode_label}: 0 | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    "{mode_label}: 0 | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                 );
                                 phase = LoadPhase::Idle;
                             } else {
                                 status_line = format!(
-                                    "{mode_label}: {} | logs: 0/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    "{mode_label}: {} | logs: 0/{} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                     rows.len(),
                                     rows.len(),
                                 );
@@ -396,12 +376,12 @@ pub fn run() -> Result<()> {
                             }
                             if done >= total {
                                 status_line = format!(
-                                    "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    "{mode_label}: {} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                     rows.len(),
                                 );
                             } else {
                                 status_line = format!(
-                                    "{mode_label}: {} | logs: {}/{} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                    "{mode_label}: {} | logs: {}/{} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                     rows.len(),
                                     done,
                                     total,
@@ -412,7 +392,7 @@ pub fn run() -> Result<()> {
                         Ok(WorkerMsg::Finished) => {
                             phase = LoadPhase::Idle;
                             status_line = format!(
-                                "{mode_label}: {} | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                "{mode_label}: {} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                 rows.len(),
                             );
                             clear_worker = true;
@@ -422,7 +402,7 @@ pub fn run() -> Result<()> {
                             last_load_error = true;
                             last_load_error_message = Some(e);
                             status_line = format!(
-                                "{mode_label}: {} | refresh failed (stale data) | auto-refresh: {refresh_label} | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
+                                "{mode_label}: {} | refresh failed (stale data) | ↑/↓: move | l/enter: inspect logs | q: quit | r: refresh",
                                 rows.len(),
                             );
                             phase = LoadPhase::Idle;

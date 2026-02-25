@@ -16,7 +16,7 @@
 
 //! Command-line parsing and usage text.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use std::str::FromStr;
 
 use crate::types::Scope;
@@ -27,7 +27,6 @@ pub struct Config {
     pub load_filter: String,
     pub active_filter: String,
     pub sub_filter: String,
-    pub refresh_secs: u64,
     pub show_help: bool,
     pub show_version: bool,
     pub scope: Scope,
@@ -258,7 +257,6 @@ Options:
       --load <value>   Filter by load state (all, loaded, stub, not-found, bad-setting, error, merged, masked)
       --active <value> Filter by active state (all, active, reloading, inactive, failed, activating, deactivating, maintenance, refreshing)
       --sub <value>    Filter by sub state (all, running, exited, dead, failed, start-pre, start, start-post, auto-restart, auto-restart-queued, dead-before-auto-restart, condition, reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog, stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill, final-watchdog, cleaning)
-  -r, --refresh <num>  Auto-refresh interval in seconds (0 disables, default: 0)
   -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright"
@@ -274,13 +272,6 @@ pub fn version_text() -> &'static str {
     )
 }
 
-fn parse_refresh_secs(value: &str) -> Result<u64> {
-    let secs = value
-        .parse::<u64>()
-        .with_context(|| format!("invalid refresh value: {value}"))?;
-    Ok(secs)
-}
-
 /// Parse command-line arguments into a [`Config`].
 pub fn parse_args<I, S>(args: I) -> Result<Config>
 where
@@ -290,7 +281,6 @@ where
     let mut load_filter: Option<LoadFilter> = None;
     let mut active_filter: Option<ActiveFilter> = None;
     let mut sub_filter: Option<SubFilter> = None;
-    let mut refresh_secs = 0u64;
     let mut show_help = false;
     let mut show_version = false;
     let mut saw_all = false;
@@ -328,12 +318,6 @@ where
                 sub_filter = Some(value.parse()?);
                 saw_specific_filter = true;
             }
-            "-r" | "--refresh" => {
-                let value = it
-                    .next()
-                    .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
-                refresh_secs = parse_refresh_secs(&value)?;
-            }
             "-u" | "--user" => {
                 scope = Scope::User;
             }
@@ -347,8 +331,6 @@ where
                 } else if let Some(value) = arg.strip_prefix("--sub=") {
                     sub_filter = Some(value.parse()?);
                     saw_specific_filter = true;
-                } else if let Some(value) = arg.strip_prefix("--refresh=") {
-                    refresh_secs = parse_refresh_secs(value)?;
                 } else {
                     return Err(anyhow!("unknown argument: {arg}\n\n{}", usage()));
                 }
@@ -379,7 +361,6 @@ where
         load_filter: load.as_str().to_string(),
         active_filter: active.as_str().to_string(),
         sub_filter: sub.as_str().to_string(),
-        refresh_secs,
         show_help,
         show_version,
         scope,
@@ -396,18 +377,16 @@ mod tests {
         assert_eq!(cfg.load_filter, "loaded");
         assert_eq!(cfg.active_filter, "active");
         assert_eq!(cfg.sub_filter, "running");
-        assert_eq!(cfg.refresh_secs, 0);
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
     }
 
     #[test]
-    fn parse_args_all_and_refresh() {
-        let cfg = parse_args(vec!["lsu", "--all", "--refresh", "5"]).expect("flags should parse");
+    fn parse_args_all() {
+        let cfg = parse_args(vec!["lsu", "--all"]).expect("flags should parse");
         assert_eq!(cfg.load_filter, "all");
         assert_eq!(cfg.active_filter, "all");
         assert_eq!(cfg.sub_filter, "all");
-        assert_eq!(cfg.refresh_secs, 5);
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
     }
@@ -471,40 +450,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_rejects_missing_refresh_values() {
-        let err = parse_args(vec!["lsu", "--refresh"]).expect_err("missing --refresh value");
-        assert!(err.to_string().contains("missing value for --refresh"));
-
-        let err = parse_args(vec!["lsu", "-r"]).expect_err("missing -r value");
-        assert!(err.to_string().contains("missing value for -r"));
-    }
-
-    #[test]
-    fn parse_args_rejects_invalid_refresh_value() {
-        let err = parse_args(vec!["lsu", "--refresh", "abc"]).expect_err("invalid refresh");
-        assert!(err.to_string().contains("invalid refresh value"));
-    }
-
-    #[test]
-    fn parse_args_allows_zero_refresh() {
-        let cfg = parse_args(vec!["lsu", "-r", "0"]).expect("zero should be allowed");
-        assert_eq!(cfg.refresh_secs, 0);
-    }
-
-    #[test]
     fn parse_args_supports_equals_forms() {
         let cfg = parse_args(vec![
             "lsu",
             "--load=loaded",
             "--active=inactive",
             "--sub=dead",
-            "--refresh=3",
         ])
         .expect("equals forms should parse");
         assert_eq!(cfg.load_filter, "loaded");
         assert_eq!(cfg.active_filter, "inactive");
         assert_eq!(cfg.sub_filter, "dead");
-        assert_eq!(cfg.refresh_secs, 3);
     }
 
     #[test]
@@ -573,12 +529,6 @@ mod tests {
 
         let err = parse_args(vec!["lsu", "--sub=bogus"]).expect_err("invalid sub");
         assert!(err.to_string().contains("invalid --sub value"));
-    }
-
-    #[test]
-    fn parse_args_rejects_invalid_refresh_value_in_equals_form() {
-        let err = parse_args(vec!["lsu", "--refresh=abc"]).expect_err("invalid refresh");
-        assert!(err.to_string().contains("invalid refresh value"));
     }
 
     #[test]

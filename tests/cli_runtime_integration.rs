@@ -27,6 +27,7 @@ fn binary_help_and_version_exit_successfully() {
     assert!(help.status.success());
     let help_stdout = String::from_utf8_lossy(&help.stdout);
     assert!(help_stdout.contains("Usage: lsu [OPTIONS]"));
+    assert!(help_stdout.contains("list systemd units"));
     assert!(help_stdout.contains("--user"));
 
     let version = Command::new(bin)
@@ -35,6 +36,7 @@ fn binary_help_and_version_exit_successfully() {
         .expect("run --version");
     assert!(version.status.success());
     let version_stdout = String::from_utf8_lossy(&version.stdout);
-    assert!(version_stdout.contains("lsu v"));
+    assert!(version_stdout.contains(&format!("lsu v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(version_stdout.contains("list systemd units"));
     assert!(version_stdout.contains("apache v2 (c) 2026 l5yth"));
 }

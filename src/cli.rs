@@ -253,7 +253,10 @@ pub fn usage() -> &'static str {
     concat!(
         "lsu v",
         env!("CARGO_PKG_VERSION"),
-        "\napache v2 (c) 2026 l5yth\n\nUsage: lsu [OPTIONS]
+        "\nlist systemd units
+apache v2 (c) 2026 l5yth
+
+Usage: lsu [OPTIONS]
 
 Show systemd services in a terminal UI.
 By default only loaded and active units are shown.
@@ -282,7 +285,8 @@ pub fn version_text() -> &'static str {
     concat!(
         "lsu v",
         env!("CARGO_PKG_VERSION"),
-        "\napache v2 (c) 2026 l5yth"
+        "\nlist systemd units
+apache v2 (c) 2026 l5yth"
     )
 }
 
@@ -485,7 +489,7 @@ mod tests {
     #[test]
     fn usage_mentions_version_flag() {
         assert!(usage().contains("--version"));
-        assert!(usage().contains(env!("CARGO_PKG_VERSION")));
+        assert!(usage().contains(&format!("lsu v{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
@@ -498,6 +502,7 @@ mod tests {
     fn version_text_contains_required_lines() {
         let v = version_text();
         assert!(v.contains(&format!("lsu v{}", env!("CARGO_PKG_VERSION"))));
+        assert!(v.contains("list systemd units"));
         assert!(v.contains("apache v2 (c) 2026 l5yth"));
     }
 

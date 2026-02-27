@@ -34,8 +34,23 @@ pub struct Config {
     pub show_help: bool,
     /// Whether version text should be printed and the process should exit.
     pub show_version: bool,
+    /// Whether the optional fake-data TUI debug mode is active.
+    pub debug_tui: bool,
     /// Target systemd scope (`system` or `user`).
     pub scope: Scope,
+}
+
+#[cfg(feature = "debug_tui")]
+fn debug_tui_config() -> Config {
+    Config {
+        load_filter: "all".to_string(),
+        active_filter: "all".to_string(),
+        sub_filter: "all".to_string(),
+        show_help: false,
+        show_version: false,
+        debug_tui: true,
+        scope: Scope::System,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +311,8 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+
     let mut load_filter: Option<LoadFilter> = None;
     let mut active_filter: Option<ActiveFilter> = None;
     let mut sub_filter: Option<SubFilter> = None;
@@ -305,11 +322,13 @@ where
     let mut saw_specific_filter = false;
     let mut scope = Scope::System;
 
-    let mut it = args.into_iter().map(Into::into);
+    let mut it = args.into_iter();
     let _program = it.next();
 
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            #[cfg(feature = "debug_tui")]
+            "--debug-tui" => return Ok(debug_tui_config()),
             "-a" | "--all" => {
                 saw_all = true;
             }
@@ -381,6 +400,7 @@ where
         sub_filter: sub.as_str().to_string(),
         show_help,
         show_version,
+        debug_tui: false,
         scope,
     })
 }
@@ -397,6 +417,7 @@ mod tests {
         assert_eq!(cfg.sub_filter, "running");
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
+        assert!(!cfg.debug_tui);
     }
 
     #[test]
@@ -407,6 +428,7 @@ mod tests {
         assert_eq!(cfg.sub_filter, "all");
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
+        assert!(!cfg.debug_tui);
     }
 
     #[test]
@@ -496,6 +518,11 @@ mod tests {
     fn usage_mentions_user_scope_flag() {
         assert!(usage().contains("--user"));
         assert!(usage().contains("-u, --user"));
+    }
+
+    #[test]
+    fn usage_does_not_mention_debug_tui_flag() {
+        assert!(!usage().contains("--debug-tui"));
     }
 
     #[test]
@@ -650,5 +677,38 @@ mod tests {
         let err = parse_args(vec!["lsu", "--all", "--sub=running"])
             .expect_err("must reject mixed all/equal filter");
         assert!(err.to_string().contains("--all cannot be combined"));
+    }
+
+    #[cfg(feature = "debug_tui")]
+    #[test]
+    fn parse_args_debug_tui_ignores_other_flags() {
+        let cfg = parse_args(vec!["lsu", "--help", "--debug-tui", "--bogus"])
+            .expect("debug tui should short-circuit parsing");
+        assert!(cfg.debug_tui);
+        assert_eq!(cfg.load_filter, "all");
+        assert_eq!(cfg.active_filter, "all");
+        assert_eq!(cfg.sub_filter, "all");
+        assert!(!cfg.show_help);
+        assert!(!cfg.show_version);
+        assert!(matches!(cfg.scope, Scope::System));
+    }
+
+    #[cfg(feature = "debug_tui")]
+    #[test]
+    fn parse_args_debug_tui_does_not_match_filter_values() {
+        let err = parse_args(vec!["lsu", "--load", "--debug-tui"])
+            .expect_err("debug flag should not be treated as a --load value");
+        assert!(err.to_string().contains("invalid --load value"));
+
+        let err = parse_args(vec!["lsu", "--active=--debug-tui"])
+            .expect_err("debug flag should not be treated as an --active value");
+        assert!(err.to_string().contains("invalid --active value"));
+    }
+
+    #[cfg(not(feature = "debug_tui"))]
+    #[test]
+    fn parse_args_rejects_debug_tui_flag_without_feature() {
+        let err = parse_args(vec!["lsu", "--debug-tui"]).expect_err("flag should be unavailable");
+        assert!(err.to_string().contains("unknown argument: --debug-tui"));
     }
 }

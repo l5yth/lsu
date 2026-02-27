@@ -13,6 +13,10 @@ homepage = "https://github.com/l5yth/lsu"
 keywords = ["systemd", "tui", "linux"]
 categories = ["command-line-utilities"]
 
+[features]
+default = []
+debug_tui = []
+
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

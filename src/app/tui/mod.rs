@@ -22,6 +22,8 @@
 //! - `input`: key translation into view-independent commands
 //! - `state`: pure status text helpers
 
+#[cfg(feature = "debug_tui")]
+mod debug;
 mod input;
 mod render;
 mod state;
@@ -252,7 +254,7 @@ pub fn run() -> Result<()> {
                             && let Some(request_id) = detail.refresh()
                         {
                             detail_worker_rx = Some(spawn_detail_worker(
-                                config.scope,
+                                &config,
                                 detail.unit.clone(),
                                 request_id,
                             ));
@@ -279,7 +281,7 @@ pub fn run() -> Result<()> {
                         if let Some(row) = rows.get(selected_idx) {
                             let request_id = detail.begin_for_unit(row.unit.clone());
                             detail_worker_rx = Some(spawn_detail_worker(
-                                config.scope,
+                                &config,
                                 detail.unit.clone(),
                                 request_id,
                             ));
@@ -293,7 +295,7 @@ pub fn run() -> Result<()> {
                             && let Some(request_id) = detail.refresh()
                         {
                             detail_worker_rx = Some(spawn_detail_worker(
-                                config.scope,
+                                &config,
                                 detail.unit.clone(),
                                 request_id,
                             ));

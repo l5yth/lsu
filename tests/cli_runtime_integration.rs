@@ -29,6 +29,7 @@ fn binary_help_and_version_exit_successfully() {
     assert!(help_stdout.contains("Usage: lsu [OPTIONS]"));
     assert!(help_stdout.contains("list systemd units"));
     assert!(help_stdout.contains("--user"));
+    assert!(!help_stdout.contains("--debug-tui"));
 
     let version = Command::new(bin)
         .arg("--version")

@@ -243,7 +243,7 @@ fn build_detail_logs(unit: &str) -> Vec<DetailLogEntry> {
 
     (0..12)
         .map(|idx| {
-            let jitter = next_random(&mut state) % 90;
+            let jitter = next_random(&mut state) % 50;
             DetailLogEntry {
                 time: format!("2026-02-27 12:{:02}:{:02}", idx, 10 + jitter),
                 log: format!(
@@ -431,6 +431,25 @@ mod tests {
                 assert!(logs[0].log.contains("load="));
             }
             other => panic!("expected DetailLogsLoaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_detail_logs_emits_valid_times() {
+        let logs = build_detail_logs("debug-api-gateway.service");
+        assert!(!logs.is_empty());
+
+        for entry in logs {
+            let parts: Vec<&str> = entry.time.split([' ', ':']).collect();
+            assert_eq!(parts.len(), 4);
+
+            let hour: u32 = parts[1].parse().expect("hour");
+            let minute: u32 = parts[2].parse().expect("minute");
+            let second: u32 = parts[3].parse().expect("second");
+
+            assert_eq!(hour, 12);
+            assert!(minute < 60);
+            assert!(second < 60);
         }
     }
 }

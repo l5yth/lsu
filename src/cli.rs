@@ -313,11 +313,6 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
 
-    #[cfg(feature = "debug_tui")]
-    if args.iter().skip(1).any(|arg| arg == "--debug-tui") {
-        return Ok(debug_tui_config());
-    }
-
     let mut load_filter: Option<LoadFilter> = None;
     let mut active_filter: Option<ActiveFilter> = None;
     let mut sub_filter: Option<SubFilter> = None;
@@ -332,6 +327,8 @@ where
 
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            #[cfg(feature = "debug_tui")]
+            "--debug-tui" => return Ok(debug_tui_config()),
             "-a" | "--all" => {
                 saw_all = true;
             }
@@ -694,6 +691,18 @@ mod tests {
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
         assert!(matches!(cfg.scope, Scope::System));
+    }
+
+    #[cfg(feature = "debug_tui")]
+    #[test]
+    fn parse_args_debug_tui_does_not_match_filter_values() {
+        let err = parse_args(vec!["lsu", "--load", "--debug-tui"])
+            .expect_err("debug flag should not be treated as a --load value");
+        assert!(err.to_string().contains("invalid --load value"));
+
+        let err = parse_args(vec!["lsu", "--active=--debug-tui"])
+            .expect_err("debug flag should not be treated as an --active value");
+        assert!(err.to_string().contains("invalid --active value"));
     }
 
     #[cfg(not(feature = "debug_tui"))]

@@ -200,6 +200,7 @@ mod tests {
             sub_filter: "running".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: crate::types::Scope::System,
         }
     }

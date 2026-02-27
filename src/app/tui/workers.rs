@@ -21,16 +21,25 @@ use std::{
     thread,
 };
 
+#[cfg(feature = "debug_tui")]
+use super::debug::{spawn_debug_detail_worker, spawn_debug_refresh_worker};
+#[cfg(test)]
+use crate::types::Scope;
 use crate::{
     cli::Config,
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
-    types::{Scope, UnitRow, WorkerMsg},
+    types::{UnitRow, WorkerMsg},
 };
 
 /// Spawn a background worker that fetches units and batched log previews.
 pub fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
+    #[cfg(feature = "debug_tui")]
+    if config.debug_tui {
+        return spawn_debug_refresh_worker(previous_rows);
+    }
+
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let fetch_all = should_fetch_all(&config);
@@ -87,8 +96,14 @@ pub fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Rece
 }
 
 /// Spawn a background worker that loads detailed logs for one unit.
-pub fn spawn_detail_worker(scope: Scope, unit: String, request_id: u64) -> Receiver<WorkerMsg> {
+pub fn spawn_detail_worker(config: &Config, unit: String, request_id: u64) -> Receiver<WorkerMsg> {
+    #[cfg(feature = "debug_tui")]
+    if config.debug_tui {
+        return spawn_debug_detail_worker(unit, request_id);
+    }
+
     let (tx, rx) = mpsc::channel();
+    let scope = config.scope;
     thread::spawn(move || match fetch_unit_logs(scope, &unit, 300) {
         Ok(logs) => {
             let _ = tx.send(WorkerMsg::DetailLogsLoaded {
@@ -121,6 +136,7 @@ mod tests {
             sub_filter: "running".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
@@ -148,6 +164,7 @@ mod tests {
             sub_filter: "all".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
@@ -186,6 +203,7 @@ mod tests {
             sub_filter: "running".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::User,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
@@ -206,6 +224,7 @@ mod tests {
             sub_filter: "dead".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
@@ -227,7 +246,19 @@ mod tests {
 
     #[test]
     fn detail_worker_emits_loaded_with_stubbed_backend() {
-        let rx = spawn_detail_worker(Scope::System, "a.service".to_string(), 7);
+        let rx = spawn_detail_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            "a.service".to_string(),
+            7,
+        );
         match rx
             .recv_timeout(Duration::from_millis(500))
             .expect("detail msg")
@@ -247,7 +278,19 @@ mod tests {
 
     #[test]
     fn detail_worker_emits_error_when_backend_fails() {
-        let rx = spawn_detail_worker(Scope::System, "error.service".to_string(), 9);
+        let rx = spawn_detail_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            "error.service".to_string(),
+            9,
+        );
         match rx
             .recv_timeout(Duration::from_millis(500))
             .expect("detail error msg")
@@ -262,6 +305,31 @@ mod tests {
                 assert!(error.contains("detail journal test error"));
             }
             other => panic!("expected DetailLogsError, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "debug_tui")]
+    #[test]
+    fn refresh_worker_uses_debug_source_when_enabled() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            debug_tui: true,
+            scope: Scope::User,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("first msg")
+        {
+            WorkerMsg::UnitsLoaded(rows) => {
+                assert!(!rows.is_empty());
+                assert!(rows.iter().all(|row| row.unit.starts_with("debug-")));
+            }
+            other => panic!("expected UnitsLoaded, got {other:?}"),
         }
     }
 }

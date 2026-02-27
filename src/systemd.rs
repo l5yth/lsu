@@ -151,6 +151,7 @@ mod tests {
             sub_filter: "running".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         let units = vec![
@@ -189,6 +190,7 @@ mod tests {
             sub_filter: "all".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         assert!(is_full_all(&all_cfg));
@@ -208,6 +210,7 @@ mod tests {
             sub_filter: "running".to_string(),
             show_help: false,
             show_version: false,
+            debug_tui: false,
             scope: Scope::System,
         };
         assert!(!should_fetch_all(&default_cfg));

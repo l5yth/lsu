@@ -22,7 +22,10 @@ use std::{
 };
 
 #[cfg(feature = "debug_tui")]
-use super::debug::{spawn_debug_detail_worker, spawn_debug_refresh_worker};
+use super::debug::{
+    spawn_debug_action_resolution_worker, spawn_debug_action_worker, spawn_debug_detail_worker,
+    spawn_debug_refresh_worker,
+};
 #[cfg(test)]
 use crate::types::Scope;
 use crate::{
@@ -30,8 +33,8 @@ use crate::{
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{
-        action_for_active_state, fetch_services, filter_services, is_full_all, run_unit_action,
-        select_enable_disable_action, should_fetch_all,
+        fetch_services, filter_services, is_full_all, run_unit_action,
+        select_enable_disable_action, select_start_stop_action, should_fetch_all,
     },
     types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
 };
@@ -132,6 +135,11 @@ pub fn spawn_unit_action_worker(
     unit: String,
     action: UnitAction,
 ) -> Receiver<WorkerMsg> {
+    #[cfg(feature = "debug_tui")]
+    if config.debug_tui {
+        return spawn_debug_action_worker(unit, action);
+    }
+
     let (tx, rx) = mpsc::channel();
     let scope = config.scope;
     thread::spawn(move || match run_unit_action(scope, &unit, action) {
@@ -154,8 +162,8 @@ fn resolve_action_confirmation(
     request: ActionResolutionRequest,
 ) -> anyhow::Result<ConfirmationState> {
     match request {
-        ActionResolutionRequest::StartStop { unit, active_state } => {
-            let action = action_for_active_state(&active_state);
+        ActionResolutionRequest::StartStop { unit } => {
+            let action = select_start_stop_action(scope, &unit)?;
             Ok(match action {
                 UnitAction::Stop => ConfirmationState::restart_or_stop(unit),
                 _ => ConfirmationState::confirm_action(action, unit),
@@ -173,6 +181,11 @@ pub fn spawn_action_resolution_worker(
     config: &Config,
     request: ActionResolutionRequest,
 ) -> Receiver<WorkerMsg> {
+    #[cfg(feature = "debug_tui")]
+    if config.debug_tui {
+        return spawn_debug_action_resolution_worker(request);
+    }
+
     let (tx, rx) = mpsc::channel();
     let scope = config.scope;
     thread::spawn(move || {
@@ -450,7 +463,6 @@ mod tests {
             },
             ActionResolutionRequest::StartStop {
                 unit: "running.service".to_string(),
-                active_state: "active".to_string(),
             },
         );
         match rx
@@ -460,6 +472,37 @@ mod tests {
             WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
                 assert_eq!(unit, "running.service");
                 assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn action_resolution_worker_uses_live_start_stop_lookup() {
+        let rx = spawn_action_resolution_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            ActionResolutionRequest::StartStop {
+                unit: "stopped.service".to_string(),
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "stopped.service");
+                assert_eq!(
+                    confirmation,
+                    ConfirmationState::confirm_action(UnitAction::Start, unit)
+                );
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
         }
@@ -537,6 +580,53 @@ mod tests {
                 assert!(rows.iter().all(|row| row.unit.starts_with("debug-")));
             }
             other => panic!("expected UnitsLoaded, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "debug_tui")]
+    #[test]
+    fn action_workers_use_debug_backend_when_enabled() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            debug_tui: true,
+            scope: Scope::User,
+        };
+
+        let resolution_rx = spawn_action_resolution_worker(
+            &cfg,
+            ActionResolutionRequest::StartStop {
+                unit: "debug-api-gateway.service".to_string(),
+            },
+        );
+        match resolution_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+
+        let action_rx = spawn_unit_action_worker(
+            &cfg,
+            "debug-api-gateway.service".to_string(),
+            UnitAction::Stop,
+        );
+        match action_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("action msg")
+        {
+            WorkerMsg::UnitActionComplete { unit, action } => {
+                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(action, UnitAction::Stop);
+            }
+            other => panic!("expected UnitActionComplete, got {other:?}"),
         }
     }
 }

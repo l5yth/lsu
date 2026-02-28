@@ -200,12 +200,10 @@ impl ConfirmationState {
 /// A request to resolve which action prompt should be shown for a unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionResolutionRequest {
-    /// Resolve the start/restart/stop workflow from the currently displayed active state.
+    /// Resolve the start/restart/stop workflow from the current `ActiveState`.
     StartStop {
         /// Target unit name.
         unit: String,
-        /// Last known active state from the list row.
-        active_state: String,
     },
     /// Resolve the enable/disable workflow from the current `UnitFileState`.
     EnableDisable {
@@ -504,7 +502,6 @@ mod tests {
     fn action_resolution_request_exposes_target_unit() {
         let start_stop = ActionResolutionRequest::StartStop {
             unit: "demo.service".to_string(),
-            active_state: "active".to_string(),
         };
         assert_eq!(start_stop.unit(), "demo.service");
 

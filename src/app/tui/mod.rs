@@ -578,7 +578,6 @@ pub fn run() -> Result<()> {
                                     &config,
                                     ActionResolutionRequest::StartStop {
                                         unit: row.unit.clone(),
-                                        active_state: row.active.clone(),
                                     },
                                 ));
                             }

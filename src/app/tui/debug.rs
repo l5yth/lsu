@@ -24,7 +24,9 @@ use std::{
 
 use crate::{
     rows::{seed_logs_from_previous, sort_rows, status_dot},
-    types::{DetailLogEntry, UnitRow, WorkerMsg},
+    types::{
+        ActionResolutionRequest, ConfirmationState, DetailLogEntry, UnitAction, UnitRow, WorkerMsg,
+    },
 };
 
 const MAX_DEBUG_UNITS: usize = 21;
@@ -259,6 +261,37 @@ fn build_detail_logs(unit: &str) -> Vec<DetailLogEntry> {
         .collect()
 }
 
+fn resolve_debug_action_confirmation(
+    request: ActionResolutionRequest,
+) -> anyhow::Result<ConfirmationState> {
+    match request {
+        ActionResolutionRequest::StartStop { unit } => {
+            let template =
+                template_for_unit(&unit).ok_or_else(|| anyhow::anyhow!("unknown debug unit"))?;
+            Ok(match template.active {
+                "active" | "activating" | "deactivating" | "reloading" => {
+                    ConfirmationState::restart_or_stop(unit)
+                }
+                _ => ConfirmationState::confirm_action(UnitAction::Start, unit),
+            })
+        }
+        ActionResolutionRequest::EnableDisable { unit } => {
+            let template =
+                template_for_unit(&unit).ok_or_else(|| anyhow::anyhow!("unknown debug unit"))?;
+            match template.load {
+                "masked" | "not-found" | "error" | "merged" | "bad-setting" | "stub" => {
+                    Err(anyhow::anyhow!(
+                        "unit file state '{}' does not support enable/disable",
+                        template.load
+                    ))
+                }
+                "loaded" => Ok(ConfirmationState::confirm_action(UnitAction::Enable, unit)),
+                _ => Ok(ConfirmationState::confirm_action(UnitAction::Enable, unit)),
+            }
+        }
+    }
+}
+
 /// Spawn a background worker that emits fake rows and fake preview logs.
 pub(super) fn spawn_debug_refresh_worker(previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
     let (tx, rx) = mpsc::channel();
@@ -306,6 +339,45 @@ pub(super) fn spawn_debug_detail_worker(unit: String, request_id: u64) -> Receiv
             request_id,
             logs: build_detail_logs(&unit),
         });
+    });
+    rx
+}
+
+/// Spawn a debug worker that resolves a synthetic confirmation prompt.
+pub(super) fn spawn_debug_action_resolution_worker(
+    request: ActionResolutionRequest,
+) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let unit = request.unit().to_string();
+        match resolve_debug_action_confirmation(request) {
+            Ok(confirmation) => {
+                let _ = tx.send(WorkerMsg::ActionConfirmationReady { unit, confirmation });
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::ActionResolutionError {
+                    unit,
+                    error: e.to_string(),
+                });
+            }
+        }
+    });
+    rx
+}
+
+/// Spawn a debug worker that simulates a unit action.
+pub(super) fn spawn_debug_action_worker(unit: String, action: UnitAction) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        if template_for_unit(&unit).is_some() {
+            let _ = tx.send(WorkerMsg::UnitActionComplete { unit, action });
+        } else {
+            let _ = tx.send(WorkerMsg::UnitActionError {
+                unit,
+                action,
+                error: "unknown debug unit".to_string(),
+            });
+        }
     });
     rx
 }
@@ -450,6 +522,39 @@ mod tests {
             assert_eq!(hour, 12);
             assert!(minute < 60);
             assert!(second < 60);
+        }
+    }
+
+    #[test]
+    fn spawn_debug_action_resolution_worker_uses_synthetic_state() {
+        let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::StartStop {
+            unit: "debug-api-gateway.service".to_string(),
+        });
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution message")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_debug_action_worker_emits_completion_for_known_units() {
+        let rx =
+            spawn_debug_action_worker("debug-api-gateway.service".to_string(), UnitAction::Restart);
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("action message")
+        {
+            WorkerMsg::UnitActionComplete { unit, action } => {
+                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(action, UnitAction::Restart);
+            }
+            other => panic!("expected UnitActionComplete, got {other:?}"),
         }
     }
 }

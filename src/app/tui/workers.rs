@@ -478,6 +478,34 @@ mod tests {
     }
 
     #[test]
+    fn action_resolution_worker_treats_refreshing_units_as_running() {
+        let rx = spawn_action_resolution_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            ActionResolutionRequest::StartStop {
+                unit: "refreshing.service".to_string(),
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "refreshing.service");
+                assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn action_resolution_worker_uses_live_start_stop_lookup() {
         let rx = spawn_action_resolution_worker(
             &Config {
@@ -505,6 +533,34 @@ mod tests {
                 );
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn action_resolution_worker_rejects_non_loadable_start_targets() {
+        let rx = spawn_action_resolution_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            ActionResolutionRequest::StartStop {
+                unit: "masked.service".to_string(),
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution msg")
+        {
+            WorkerMsg::ActionResolutionError { unit, error } => {
+                assert_eq!(unit, "masked.service");
+                assert_eq!(error, "load state 'masked' does not support start");
+            }
+            other => panic!("expected ActionResolutionError, got {other:?}"),
         }
     }
 

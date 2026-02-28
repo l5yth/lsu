@@ -907,6 +907,24 @@ mod tests {
     }
 
     #[test]
+    fn apply_action_resolution_msg_ignores_unrelated_messages() {
+        let mut confirmation = None;
+        let mut status_line = "unchanged".to_string();
+        let mut override_stale = false;
+
+        assert!(!apply_action_resolution_msg(
+            &mut confirmation,
+            &mut status_line,
+            &mut override_stale,
+            2,
+            WorkerMsg::Finished,
+        ));
+        assert!(confirmation.is_none());
+        assert_eq!(status_line, "unchanged");
+        assert!(!override_stale);
+    }
+
+    #[test]
     fn apply_action_worker_msg_updates_refresh_and_status() {
         let mut refresh_requested = false;
         let mut status_line = String::new();
@@ -941,5 +959,23 @@ mod tests {
         assert!(!refresh_requested);
         assert!(status_line.contains("failed to stop demo.service: nope"));
         assert!(override_stale);
+    }
+
+    #[test]
+    fn apply_action_worker_msg_ignores_unrelated_messages() {
+        let mut refresh_requested = false;
+        let mut status_line = "unchanged".to_string();
+        let mut override_stale = false;
+
+        assert!(!apply_action_worker_msg(
+            &mut refresh_requested,
+            &mut status_line,
+            &mut override_stale,
+            3,
+            WorkerMsg::Finished,
+        ));
+        assert!(!refresh_requested);
+        assert_eq!(status_line, "unchanged");
+        assert!(!override_stale);
     }
 }

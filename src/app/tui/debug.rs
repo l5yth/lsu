@@ -24,6 +24,7 @@ use std::{
 
 use crate::{
     rows::{seed_logs_from_previous, sort_rows, status_dot},
+    systemd::action_for_start_stop_states,
     types::{
         ActionResolutionRequest, ConfirmationState, DetailLogEntry, UnitAction, UnitRow, WorkerMsg,
     },
@@ -268,11 +269,11 @@ fn resolve_debug_action_confirmation(
         ActionResolutionRequest::StartStop { unit } => {
             let template =
                 template_for_unit(&unit).ok_or_else(|| anyhow::anyhow!("unknown debug unit"))?;
-            Ok(match template.active {
-                "active" | "activating" | "deactivating" | "reloading" => {
-                    ConfirmationState::restart_or_stop(unit)
-                }
-                _ => ConfirmationState::confirm_action(UnitAction::Start, unit),
+            let action = action_for_start_stop_states(template.active, template.load)?;
+            Ok(match action {
+                UnitAction::Stop => ConfirmationState::restart_or_stop(unit),
+                UnitAction::Start => ConfirmationState::confirm_action(action, unit),
+                UnitAction::Restart | UnitAction::Enable | UnitAction::Disable => unreachable!(),
             })
         }
         ActionResolutionRequest::EnableDisable { unit } => {
@@ -550,6 +551,40 @@ mod tests {
                 assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_debug_action_resolution_worker_treats_refreshing_units_as_running() {
+        let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::StartStop {
+            unit: "debug-event-fanout.service".to_string(),
+        });
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution message")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "debug-event-fanout.service");
+                assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_debug_action_resolution_worker_rejects_non_loadable_start_targets() {
+        let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::StartStop {
+            unit: "debug-ghost-printer.service".to_string(),
+        });
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution message")
+        {
+            WorkerMsg::ActionResolutionError { unit, error } => {
+                assert_eq!(unit, "debug-ghost-printer.service");
+                assert_eq!(error, "load state 'not-found' does not support start");
+            }
+            other => panic!("expected ActionResolutionError, got {other:?}"),
         }
     }
 

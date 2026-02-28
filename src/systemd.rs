@@ -49,8 +49,27 @@ pub fn should_fetch_all(cfg: &Config) -> bool {
 /// Choose the start/stop action for a unit from its current `ActiveState`.
 pub fn action_for_active_state(active_state: &str) -> UnitAction {
     match active_state {
-        "active" | "activating" | "deactivating" | "reloading" => UnitAction::Stop,
+        "active" | "activating" | "deactivating" | "reloading" | "refreshing" => UnitAction::Stop,
         _ => UnitAction::Start,
+    }
+}
+
+fn validate_startable_load_state(load_state: &str) -> Result<()> {
+    match load_state {
+        "loaded" => Ok(()),
+        other => Err(anyhow!("load state '{other}' does not support start")),
+    }
+}
+
+/// Choose the start/stop action for a unit from its current `ActiveState` and `LoadState`.
+pub fn action_for_start_stop_states(active_state: &str, load_state: &str) -> Result<UnitAction> {
+    match action_for_active_state(active_state) {
+        UnitAction::Stop => Ok(UnitAction::Stop),
+        UnitAction::Start => {
+            validate_startable_load_state(load_state)?;
+            Ok(UnitAction::Start)
+        }
+        UnitAction::Restart | UnitAction::Enable | UnitAction::Disable => unreachable!(),
     }
 }
 
@@ -84,7 +103,8 @@ fn fetch_unit_property(scope: Scope, unit: &str, property: &str) -> Result<Strin
 #[cfg(not(test))]
 pub fn select_start_stop_action(scope: Scope, unit: &str) -> Result<UnitAction> {
     let active_state = fetch_unit_property(scope, unit, "ActiveState")?;
-    Ok(action_for_active_state(&active_state))
+    let load_state = fetch_unit_property(scope, unit, "LoadState")?;
+    action_for_start_stop_states(&active_state, &load_state)
 }
 
 /// Determine whether an enable or disable action should be offered for a unit.
@@ -184,11 +204,15 @@ pub fn select_start_stop_action(_scope: Scope, unit: &str) -> Result<UnitAction>
     if unit == "state-error.service" {
         return Err(anyhow!("active state test error"));
     }
-    if unit == "running.service" {
-        Ok(UnitAction::Stop)
-    } else {
-        Ok(UnitAction::Start)
-    }
+    let (active_state, load_state) = match unit {
+        "running.service" => ("active", "loaded"),
+        "refreshing.service" => ("refreshing", "loaded"),
+        "masked.service" => ("inactive", "masked"),
+        "missing.service" => ("inactive", "not-found"),
+        "broken.service" => ("failed", "bad-setting"),
+        _ => ("inactive", "loaded"),
+    };
+    action_for_start_stop_states(active_state, load_state)
 }
 
 /// Determine whether an enable or disable action should be offered for a unit.
@@ -298,8 +322,30 @@ mod tests {
     fn action_for_active_state_toggles_runningish_units_to_stop() {
         assert_eq!(action_for_active_state("active"), UnitAction::Stop);
         assert_eq!(action_for_active_state("reloading"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("refreshing"), UnitAction::Stop);
         assert_eq!(action_for_active_state("failed"), UnitAction::Start);
         assert_eq!(action_for_active_state("inactive"), UnitAction::Start);
+    }
+
+    #[test]
+    fn action_for_start_stop_states_rejects_non_loadable_start_targets() {
+        for load_state in ["masked", "not-found", "bad-setting"] {
+            let err = action_for_start_stop_states("inactive", load_state)
+                .expect_err("non-loadable units should reject start");
+            assert_eq!(
+                err.to_string(),
+                format!("load state '{load_state}' does not support start")
+            );
+        }
+    }
+
+    #[test]
+    fn action_for_start_stop_states_allows_stop_for_refreshing_units() {
+        assert_eq!(
+            action_for_start_stop_states("refreshing", "loaded")
+                .expect("refreshing units should use stop workflow"),
+            UnitAction::Stop
+        );
     }
 
     #[test]
@@ -433,6 +479,11 @@ mod tests {
             UnitAction::Stop
         );
         assert_eq!(
+            select_start_stop_action(Scope::System, "refreshing.service")
+                .expect("refreshing start/stop action"),
+            UnitAction::Stop
+        );
+        assert_eq!(
             select_enable_disable_action(Scope::System, "enabled.service")
                 .expect("enable/disable action"),
             UnitAction::Disable
@@ -449,6 +500,13 @@ mod tests {
         let start_stop = select_start_stop_action(Scope::System, "state-error.service")
             .expect_err("start/stop error");
         assert!(start_stop.to_string().contains("active state test error"));
+
+        let masked = select_start_stop_action(Scope::System, "masked.service")
+            .expect_err("masked units should reject start");
+        assert_eq!(
+            masked.to_string(),
+            "load state 'masked' does not support start"
+        );
 
         let enable_disable = select_enable_disable_action(Scope::System, "state-error.service")
             .expect_err("enable/disable error");

@@ -197,6 +197,32 @@ impl ConfirmationState {
     }
 }
 
+/// A request to resolve which action prompt should be shown for a unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionResolutionRequest {
+    /// Resolve the start/restart/stop workflow from the currently displayed active state.
+    StartStop {
+        /// Target unit name.
+        unit: String,
+        /// Last known active state from the list row.
+        active_state: String,
+    },
+    /// Resolve the enable/disable workflow from the current `UnitFileState`.
+    EnableDisable {
+        /// Target unit name.
+        unit: String,
+    },
+}
+
+impl ActionResolutionRequest {
+    /// Return the target unit for this request.
+    pub fn unit(&self) -> &str {
+        match self {
+            Self::StartStop { unit, .. } | Self::EnableDisable { unit } => unit,
+        }
+    }
+}
+
 /// Detail pane state used by async log loading.
 #[derive(Debug, Clone, Default)]
 pub struct DetailState {
@@ -295,6 +321,20 @@ pub enum WorkerMsg {
         unit: String,
         /// Monotonic request identifier.
         request_id: u64,
+        /// Error text to show in the UI.
+        error: String,
+    },
+    /// A confirmation prompt was resolved and is ready to show.
+    ActionConfirmationReady {
+        /// Target unit name.
+        unit: String,
+        /// Resolved confirmation prompt.
+        confirmation: ConfirmationState,
+    },
+    /// Resolving a unit action prompt failed.
+    ActionResolutionError {
+        /// Unit for which the prompt was being resolved.
+        unit: String,
         /// Error text to show in the UI.
         error: String,
     },
@@ -458,5 +498,19 @@ mod tests {
         let restart_or_stop = ConfirmationState::restart_or_stop("run.service".to_string());
         assert_eq!(restart_or_stop.kind, ConfirmationKind::RestartOrStop);
         assert_eq!(restart_or_stop.confirmed_action(), None);
+    }
+
+    #[test]
+    fn action_resolution_request_exposes_target_unit() {
+        let start_stop = ActionResolutionRequest::StartStop {
+            unit: "demo.service".to_string(),
+            active_state: "active".to_string(),
+        };
+        assert_eq!(start_stop.unit(), "demo.service");
+
+        let enable_disable = ActionResolutionRequest::EnableDisable {
+            unit: "other.service".to_string(),
+        };
+        assert_eq!(enable_disable.unit(), "other.service");
     }
 }

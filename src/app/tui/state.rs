@@ -59,6 +59,11 @@ pub fn action_status_text(rows: usize, confirmation: &ConfirmationState) -> Stri
     format!("{MODE_LABEL}: {rows} | {} {}...", verb, confirmation.unit)
 }
 
+/// Build the footer status text shown while an action prompt is being resolved.
+pub fn action_resolution_status_text(rows: usize, unit: &str) -> String {
+    format!("{MODE_LABEL}: {rows} | resolving action for {unit}...")
+}
+
 /// Build the footer status text after a unit action completes.
 pub fn action_complete_status_text(
     rows: usize,
@@ -154,6 +159,12 @@ mod tests {
             ConfirmationState::confirm_action(UnitAction::Start, "demo.service".to_string());
         let s = action_status_text(3, &confirmation);
         assert!(s.contains("starting demo.service"));
+    }
+
+    #[test]
+    fn action_resolution_status_text_mentions_target_unit() {
+        let s = action_resolution_status_text(3, "demo.service");
+        assert!(s.contains("resolving action for demo.service"));
     }
 
     #[test]

@@ -29,8 +29,11 @@ use crate::{
     cli::Config,
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
-    systemd::{fetch_services, filter_services, is_full_all, run_unit_action, should_fetch_all},
-    types::{UnitAction, UnitRow, WorkerMsg},
+    systemd::{
+        action_for_active_state, fetch_services, filter_services, is_full_all, run_unit_action,
+        select_enable_disable_action, should_fetch_all,
+    },
+    types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
 };
 
 /// Spawn a background worker that fetches units and batched log previews.
@@ -141,6 +144,49 @@ pub fn spawn_unit_action_worker(
                 action,
                 error: e.to_string(),
             });
+        }
+    });
+    rx
+}
+
+fn resolve_action_confirmation(
+    scope: crate::types::Scope,
+    request: ActionResolutionRequest,
+) -> anyhow::Result<ConfirmationState> {
+    match request {
+        ActionResolutionRequest::StartStop { unit, active_state } => {
+            let action = action_for_active_state(&active_state);
+            Ok(match action {
+                UnitAction::Stop => ConfirmationState::restart_or_stop(unit),
+                _ => ConfirmationState::confirm_action(action, unit),
+            })
+        }
+        ActionResolutionRequest::EnableDisable { unit } => {
+            let action = select_enable_disable_action(scope, &unit)?;
+            Ok(ConfirmationState::confirm_action(action, unit))
+        }
+    }
+}
+
+/// Spawn a background worker that resolves which unit-action prompt should be shown.
+pub fn spawn_action_resolution_worker(
+    config: &Config,
+    request: ActionResolutionRequest,
+) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    let scope = config.scope;
+    thread::spawn(move || {
+        let unit = request.unit().to_string();
+        match resolve_action_confirmation(scope, request) {
+            Ok(confirmation) => {
+                let _ = tx.send(WorkerMsg::ActionConfirmationReady { unit, confirmation });
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::ActionResolutionError {
+                    unit,
+                    error: e.to_string(),
+                });
+            }
         }
     });
     rx
@@ -387,6 +433,85 @@ mod tests {
                 assert!(error.contains("unit action test error"));
             }
             other => panic!("expected UnitActionError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn action_resolution_worker_resolves_start_stop_from_active_state() {
+        let rx = spawn_action_resolution_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            ActionResolutionRequest::StartStop {
+                unit: "running.service".to_string(),
+                active_state: "active".to_string(),
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "running.service");
+                assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn action_resolution_worker_resolves_enable_disable_and_errors() {
+        let cfg = Config {
+            load_filter: "loaded".to_string(),
+            active_filter: "active".to_string(),
+            sub_filter: "running".to_string(),
+            show_help: false,
+            show_version: false,
+            debug_tui: false,
+            scope: Scope::System,
+        };
+
+        let rx = spawn_action_resolution_worker(
+            &cfg,
+            ActionResolutionRequest::EnableDisable {
+                unit: "enabled.service".to_string(),
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("enable/disable resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "enabled.service");
+                assert_eq!(
+                    confirmation,
+                    ConfirmationState::confirm_action(UnitAction::Disable, unit)
+                );
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+
+        let err_rx = spawn_action_resolution_worker(
+            &cfg,
+            ActionResolutionRequest::EnableDisable {
+                unit: "static.service".to_string(),
+            },
+        );
+        match err_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution error msg")
+        {
+            WorkerMsg::ActionResolutionError { unit, error } => {
+                assert_eq!(unit, "static.service");
+                assert!(error.contains("does not support enable/disable"));
+            }
+            other => panic!("expected ActionResolutionError, got {other:?}"),
         }
     }
 

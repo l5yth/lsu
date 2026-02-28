@@ -16,11 +16,9 @@
 
 //! `systemctl` integration and service filtering logic.
 
-use anyhow::Result;
-#[cfg(test)]
-use anyhow::anyhow;
 #[cfg(not(test))]
 use anyhow::{Context, bail};
+use anyhow::{Result, anyhow};
 #[cfg(not(test))]
 use std::process::Command;
 
@@ -57,12 +55,13 @@ pub fn action_for_active_state(active_state: &str) -> UnitAction {
 }
 
 /// Choose the enable/disable action for a unit from its current `UnitFileState`.
-pub fn action_for_unit_file_state(unit_file_state: &str) -> UnitAction {
+pub fn action_for_unit_file_state(unit_file_state: &str) -> Result<UnitAction> {
     match unit_file_state {
-        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias" => {
-            UnitAction::Disable
-        }
-        _ => UnitAction::Enable,
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" => Ok(UnitAction::Disable),
+        "disabled" => Ok(UnitAction::Enable),
+        other => Err(anyhow!(
+            "unit file state '{other}' does not support enable/disable"
+        )),
     }
 }
 
@@ -92,7 +91,7 @@ pub fn select_start_stop_action(scope: Scope, unit: &str) -> Result<UnitAction> 
 #[cfg(not(test))]
 pub fn select_enable_disable_action(scope: Scope, unit: &str) -> Result<UnitAction> {
     let unit_file_state = fetch_unit_property(scope, unit, "UnitFileState")?;
-    Ok(action_for_unit_file_state(&unit_file_state))
+    action_for_unit_file_state(&unit_file_state)
 }
 
 /// Execute one start/stop/enable/disable action for a unit.
@@ -189,6 +188,10 @@ pub fn select_enable_disable_action(_scope: Scope, unit: &str) -> Result<UnitAct
     }
     if unit == "enabled.service" {
         Ok(UnitAction::Disable)
+    } else if unit == "static.service" {
+        Err(anyhow!(
+            "unit file state 'static' does not support enable/disable"
+        ))
     } else {
         Ok(UnitAction::Enable)
     }
@@ -290,13 +293,35 @@ mod tests {
 
     #[test]
     fn action_for_unit_file_state_toggles_enabledish_units_to_disable() {
-        assert_eq!(action_for_unit_file_state("enabled"), UnitAction::Disable);
         assert_eq!(
-            action_for_unit_file_state("linked-runtime"),
+            action_for_unit_file_state("enabled").expect("enabled action"),
             UnitAction::Disable
         );
-        assert_eq!(action_for_unit_file_state("disabled"), UnitAction::Enable);
-        assert_eq!(action_for_unit_file_state("static"), UnitAction::Enable);
+        assert_eq!(
+            action_for_unit_file_state("linked-runtime").expect("linked-runtime action"),
+            UnitAction::Disable
+        );
+        assert_eq!(
+            action_for_unit_file_state("disabled").expect("disabled action"),
+            UnitAction::Enable
+        );
+    }
+
+    #[test]
+    fn action_for_unit_file_state_rejects_unsupported_states() {
+        for state in [
+            "static",
+            "masked",
+            "generated",
+            "transient",
+            "indirect",
+            "alias",
+        ] {
+            let err = action_for_unit_file_state(state).expect_err("unsupported state");
+            assert!(err.to_string().contains(&format!(
+                "unit file state '{state}' does not support enable/disable"
+            )));
+        }
     }
 
     #[test]
@@ -386,6 +411,11 @@ mod tests {
                 .expect("enable/disable action"),
             UnitAction::Disable
         );
+        assert_eq!(
+            select_enable_disable_action(Scope::System, "disabled.service")
+                .expect("enable/disable action"),
+            UnitAction::Enable
+        );
     }
 
     #[test]
@@ -400,6 +430,14 @@ mod tests {
             enable_disable
                 .to_string()
                 .contains("unit file state test error")
+        );
+
+        let unsupported = select_enable_disable_action(Scope::System, "static.service")
+            .expect_err("unsupported enable/disable");
+        assert!(
+            unsupported
+                .to_string()
+                .contains("unit file state 'static' does not support enable/disable")
         );
     }
 

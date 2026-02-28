@@ -103,6 +103,124 @@ pub enum ViewMode {
     Detail,
 }
 
+/// A systemd unit action that can be confirmed and executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitAction {
+    /// Start the unit.
+    Start,
+    /// Restart the unit.
+    Restart,
+    /// Stop the unit.
+    Stop,
+    /// Enable the unit.
+    Enable,
+    /// Disable the unit.
+    Disable,
+}
+
+impl UnitAction {
+    /// Return the `systemctl` subcommand for this action.
+    pub fn as_systemctl_arg(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
+
+    /// Return the present-participle verb used in confirmation prompts.
+    pub fn prompt_verb(self) -> &'static str {
+        match self {
+            Self::Start => "starting",
+            Self::Restart => "restarting",
+            Self::Stop => "stopping",
+            Self::Enable => "enabling",
+            Self::Disable => "disabling",
+        }
+    }
+
+    /// Return the past-tense verb used for completion messages.
+    pub fn past_tense(self) -> &'static str {
+        match self {
+            Self::Start => "started",
+            Self::Restart => "restarted",
+            Self::Stop => "stopped",
+            Self::Enable => "enabled",
+            Self::Disable => "disabled",
+        }
+    }
+}
+
+/// The kind of confirmation prompt currently shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationKind {
+    /// A yes/no prompt for one action.
+    ConfirmAction(UnitAction),
+    /// A running-unit prompt offering restart or stop.
+    RestartOrStop,
+}
+
+/// A pending confirmation for a unit action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmationState {
+    /// The prompt behavior to render and handle.
+    pub kind: ConfirmationKind,
+    /// Target unit name.
+    pub unit: String,
+}
+
+impl ConfirmationState {
+    /// Create a yes/no confirmation request for the given action and unit.
+    pub fn confirm_action(action: UnitAction, unit: String) -> Self {
+        Self {
+            kind: ConfirmationKind::ConfirmAction(action),
+            unit,
+        }
+    }
+
+    /// Create a restart-or-stop prompt for a running unit.
+    pub fn restart_or_stop(unit: String) -> Self {
+        Self {
+            kind: ConfirmationKind::RestartOrStop,
+            unit,
+        }
+    }
+
+    /// Return the action to execute when the prompt is a yes/no confirmation.
+    pub fn confirmed_action(&self) -> Option<UnitAction> {
+        match self.kind {
+            ConfirmationKind::ConfirmAction(action) => Some(action),
+            ConfirmationKind::RestartOrStop => None,
+        }
+    }
+}
+
+/// A request to resolve which action prompt should be shown for a unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionResolutionRequest {
+    /// Resolve the start/restart/stop workflow from the current `ActiveState`.
+    StartStop {
+        /// Target unit name.
+        unit: String,
+    },
+    /// Resolve the enable/disable workflow from the current `UnitFileState`.
+    EnableDisable {
+        /// Target unit name.
+        unit: String,
+    },
+}
+
+impl ActionResolutionRequest {
+    /// Return the target unit for this request.
+    pub fn unit(&self) -> &str {
+        match self {
+            Self::StartStop { unit, .. } | Self::EnableDisable { unit } => unit,
+        }
+    }
+}
+
 /// Detail pane state used by async log loading.
 #[derive(Debug, Clone, Default)]
 pub struct DetailState {
@@ -201,6 +319,36 @@ pub enum WorkerMsg {
         unit: String,
         /// Monotonic request identifier.
         request_id: u64,
+        /// Error text to show in the UI.
+        error: String,
+    },
+    /// A confirmation prompt was resolved and is ready to show.
+    ActionConfirmationReady {
+        /// Target unit name.
+        unit: String,
+        /// Resolved confirmation prompt.
+        confirmation: ConfirmationState,
+    },
+    /// Resolving a unit action prompt failed.
+    ActionResolutionError {
+        /// Unit for which the prompt was being resolved.
+        unit: String,
+        /// Error text to show in the UI.
+        error: String,
+    },
+    /// A unit action completed successfully.
+    UnitActionComplete {
+        /// Unit for which the action was executed.
+        unit: String,
+        /// Executed action.
+        action: UnitAction,
+    },
+    /// A unit action failed.
+    UnitActionError {
+        /// Unit for which the action was attempted.
+        unit: String,
+        /// Action that failed.
+        action: UnitAction,
         /// Error text to show in the UI.
         error: String,
     },
@@ -324,5 +472,42 @@ mod tests {
         assert!(matches!(idle, LoadPhase::Idle));
         assert!(matches!(fetching_units, LoadPhase::FetchingUnits));
         assert!(matches!(fetching_logs, LoadPhase::FetchingLogs));
+    }
+
+    #[test]
+    fn unit_action_labels_match_expected_systemctl_and_prompt_text() {
+        assert_eq!(UnitAction::Start.as_systemctl_arg(), "start");
+        assert_eq!(UnitAction::Restart.as_systemctl_arg(), "restart");
+        assert_eq!(UnitAction::Stop.prompt_verb(), "stopping");
+        assert_eq!(UnitAction::Enable.past_tense(), "enabled");
+        assert_eq!(UnitAction::Disable.past_tense(), "disabled");
+    }
+
+    #[test]
+    fn confirmation_state_builders_capture_kind_and_unit() {
+        let confirmation =
+            ConfirmationState::confirm_action(UnitAction::Start, "demo.service".to_string());
+        assert_eq!(
+            confirmation.kind,
+            ConfirmationKind::ConfirmAction(UnitAction::Start)
+        );
+        assert_eq!(confirmation.unit, "demo.service");
+
+        let restart_or_stop = ConfirmationState::restart_or_stop("run.service".to_string());
+        assert_eq!(restart_or_stop.kind, ConfirmationKind::RestartOrStop);
+        assert_eq!(restart_or_stop.confirmed_action(), None);
+    }
+
+    #[test]
+    fn action_resolution_request_exposes_target_unit() {
+        let start_stop = ActionResolutionRequest::StartStop {
+            unit: "demo.service".to_string(),
+        };
+        assert_eq!(start_stop.unit(), "demo.service");
+
+        let enable_disable = ActionResolutionRequest::EnableDisable {
+            unit: "other.service".to_string(),
+        };
+        assert_eq!(enable_disable.unit(), "other.service");
     }
 }

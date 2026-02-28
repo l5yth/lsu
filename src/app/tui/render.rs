@@ -18,12 +18,13 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
+use super::state::confirmation_prompt_text;
 use crate::{
     cli::Config,
-    types::{DetailState, LoadPhase, UnitRow, ViewMode},
+    types::{ConfirmationState, DetailState, LoadPhase, UnitRow, ViewMode},
 };
 
 /// Render one UI frame from runtime state.
@@ -42,6 +43,8 @@ pub fn draw_frame(
     last_load_error_message: Option<&str>,
     refresh_requested: bool,
     status_line: &str,
+    status_line_overrides_stale: bool,
+    confirmation: Option<&ConfirmationState>,
     config: &Config,
 ) {
     let size = f.area();
@@ -129,20 +132,23 @@ pub fn draw_frame(
                 f.render_stateful_widget(t, chunks[0], list_table_state);
             }
 
-            let footer_text =
-                if !rows.is_empty() && last_load_error && matches!(phase, LoadPhase::Idle) {
-                    match last_load_error_message {
-                        Some(err) if !err.trim().is_empty() => {
-                            format!(
-                                "refresh failed (stale data): {} | r: refresh | q: quit",
-                                err
-                            )
-                        }
-                        _ => "refresh failed (stale data) | r: refresh | q: quit".to_string(),
+            let footer_text = if !status_line_overrides_stale
+                && !rows.is_empty()
+                && last_load_error
+                && matches!(phase, LoadPhase::Idle)
+            {
+                match last_load_error_message {
+                    Some(err) if !err.trim().is_empty() => {
+                        format!(
+                            "refresh failed (stale data): {} | r: refresh | q: quit",
+                            err
+                        )
                     }
-                } else {
-                    status_line.to_string()
-                };
+                    _ => "refresh failed (stale data) | r: refresh | q: quit".to_string(),
+                }
+            } else {
+                status_line.to_string()
+            };
             let footer = Paragraph::new(footer_text).style(Style::default().fg(Color::DarkGray));
             f.render_widget(footer, chunks[1]);
         }
@@ -186,6 +192,36 @@ pub fn draw_frame(
             f.render_widget(footer, chunks[1]);
         }
     }
+
+    if let Some(confirmation) = confirmation {
+        let area = centered_rect(70, 5, size);
+        f.render_widget(Clear, area);
+        let prompt = Paragraph::new(confirmation_prompt_text(confirmation))
+            .block(Block::default().borders(Borders::ALL).title("confirm"))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        f.render_widget(prompt, area);
+    }
+}
+
+fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(width_percent),
+            Constraint::Fill(1),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
 }
 
 #[cfg(test)]
@@ -240,6 +276,8 @@ mod tests {
                     None,
                     false,
                     "services: 1",
+                    false,
+                    None,
                     &sample_config(),
                 )
             })
@@ -273,6 +311,8 @@ mod tests {
                     None,
                     false,
                     "services: 1",
+                    false,
+                    None,
                     &sample_config(),
                 )
             })
@@ -302,6 +342,8 @@ mod tests {
                     None,
                     false,
                     "services: 0",
+                    false,
+                    None,
                     &sample_config(),
                 )
             })
@@ -323,6 +365,8 @@ mod tests {
                     Some("boom"),
                     false,
                     "services: 0",
+                    false,
+                    None,
                     &sample_config(),
                 )
             })
@@ -351,6 +395,72 @@ mod tests {
                     Some("stale"),
                     false,
                     "services: 1",
+                    false,
+                    None,
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn draw_frame_renders_confirmation_overlay() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+        let confirmation = ConfirmationState::confirm_action(
+            crate::types::UnitAction::Enable,
+            "a.service".to_string(),
+        );
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    false,
+                    None,
+                    false,
+                    "services: 1",
+                    false,
+                    Some(&confirmation),
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn draw_frame_allows_status_override_to_replace_stale_footer() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    true,
+                    Some("stale"),
+                    false,
+                    "starting a.service...",
+                    true,
+                    None,
                     &sample_config(),
                 )
             })

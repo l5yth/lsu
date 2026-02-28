@@ -16,17 +16,18 @@
 
 //! `systemctl` integration and service filtering logic.
 
-use anyhow::Result;
-#[cfg(test)]
-use anyhow::anyhow;
 #[cfg(not(test))]
 use anyhow::{Context, bail};
+use anyhow::{Result, anyhow};
 #[cfg(not(test))]
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
-use crate::{cli::Config, types::Scope, types::SystemctlUnit};
+use crate::{
+    cli::Config,
+    types::{Scope, SystemctlUnit, UnitAction},
+};
 
 /// Match one state value against a filter value (`all` means wildcard).
 pub fn filter_matches(value: &str, wanted: &str) -> bool {
@@ -43,6 +44,98 @@ pub fn should_fetch_all(cfg: &Config) -> bool {
     !((cfg.load_filter == "all" || cfg.load_filter == "loaded")
         && cfg.active_filter == "active"
         && cfg.sub_filter == "running")
+}
+
+/// Choose the start/stop action for a unit from its current `ActiveState`.
+pub fn action_for_active_state(active_state: &str) -> UnitAction {
+    match active_state {
+        "active" | "activating" | "deactivating" | "reloading" | "refreshing" => UnitAction::Stop,
+        _ => UnitAction::Start,
+    }
+}
+
+fn validate_startable_load_state(load_state: &str) -> Result<()> {
+    match load_state {
+        "loaded" => Ok(()),
+        other => Err(anyhow!("load state '{other}' does not support start")),
+    }
+}
+
+/// Choose the start/stop action for a unit from its current `ActiveState` and `LoadState`.
+pub fn action_for_start_stop_states(active_state: &str, load_state: &str) -> Result<UnitAction> {
+    match action_for_active_state(active_state) {
+        UnitAction::Stop => Ok(UnitAction::Stop),
+        UnitAction::Start => {
+            validate_startable_load_state(load_state)?;
+            Ok(UnitAction::Start)
+        }
+        UnitAction::Restart | UnitAction::Enable | UnitAction::Disable => unreachable!(),
+    }
+}
+
+/// Choose the enable/disable action for a unit from its current `UnitFileState`.
+pub fn action_for_unit_file_state(unit_file_state: &str) -> Result<UnitAction> {
+    match unit_file_state {
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" => Ok(UnitAction::Disable),
+        "disabled" => Ok(UnitAction::Enable),
+        other => Err(anyhow!(
+            "unit file state '{other}' does not support enable/disable"
+        )),
+    }
+}
+
+#[cfg(not(test))]
+fn fetch_unit_property(scope: Scope, unit: &str, property: &str) -> Result<String> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    cmd.arg("show")
+        .arg(scope.as_systemd_arg())
+        .arg("--property")
+        .arg(property)
+        .arg("--value")
+        .arg(unit);
+    let output =
+        cmd_stdout(&mut cmd).with_context(|| format!("systemctl show {property} failed"))?;
+    Ok(output.trim().to_string())
+}
+
+/// Determine whether a start or stop action should be offered for a unit.
+#[cfg(not(test))]
+pub fn select_start_stop_action(scope: Scope, unit: &str) -> Result<UnitAction> {
+    let active_state = fetch_unit_property(scope, unit, "ActiveState")?;
+    let load_state = fetch_unit_property(scope, unit, "LoadState")?;
+    action_for_start_stop_states(&active_state, &load_state)
+}
+
+/// Determine whether an enable or disable action should be offered for a unit.
+#[cfg(not(test))]
+pub fn select_enable_disable_action(scope: Scope, unit: &str) -> Result<UnitAction> {
+    let unit_file_state = fetch_unit_property(scope, unit, "UnitFileState")?;
+    action_for_unit_file_state(&unit_file_state)
+}
+
+fn unit_action_args(scope: Scope, unit: &str, action: UnitAction) -> Vec<String> {
+    vec![
+        action.as_systemctl_arg().to_string(),
+        "--no-block".to_string(),
+        "--no-ask-password".to_string(),
+        scope.as_systemd_arg().to_string(),
+        unit.to_string(),
+    ]
+}
+
+/// Execute one start/stop/enable/disable action for a unit.
+#[cfg(not(test))]
+pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<()> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    for arg in unit_action_args(scope, unit, action) {
+        cmd.arg(arg);
+    }
+    cmd.stdin(Stdio::null());
+    let _ = cmd_stdout(&mut cmd)
+        .with_context(|| format!("systemctl {} failed", action.as_systemctl_arg()))?;
+    Ok(())
 }
 
 /// Query service units via `systemctl` JSON output.
@@ -103,6 +196,49 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
         ]);
     }
     Ok(Vec::new())
+}
+
+/// Determine whether a start or stop action should be offered for a unit.
+#[cfg(test)]
+pub fn select_start_stop_action(_scope: Scope, unit: &str) -> Result<UnitAction> {
+    if unit == "state-error.service" {
+        return Err(anyhow!("active state test error"));
+    }
+    let (active_state, load_state) = match unit {
+        "running.service" => ("active", "loaded"),
+        "refreshing.service" => ("refreshing", "loaded"),
+        "masked.service" => ("inactive", "masked"),
+        "missing.service" => ("inactive", "not-found"),
+        "broken.service" => ("failed", "bad-setting"),
+        _ => ("inactive", "loaded"),
+    };
+    action_for_start_stop_states(active_state, load_state)
+}
+
+/// Determine whether an enable or disable action should be offered for a unit.
+#[cfg(test)]
+pub fn select_enable_disable_action(_scope: Scope, unit: &str) -> Result<UnitAction> {
+    if unit == "state-error.service" {
+        return Err(anyhow!("unit file state test error"));
+    }
+    if unit == "enabled.service" {
+        Ok(UnitAction::Disable)
+    } else if unit == "static.service" {
+        Err(anyhow!(
+            "unit file state 'static' does not support enable/disable"
+        ))
+    } else {
+        Ok(UnitAction::Enable)
+    }
+}
+
+/// Execute one start/stop/enable/disable action for a unit.
+#[cfg(test)]
+pub fn run_unit_action(_scope: Scope, unit: &str, _action: UnitAction) -> Result<()> {
+    if unit == "action-error.service" {
+        return Err(anyhow!("unit action test error"));
+    }
+    Ok(())
 }
 
 /// Apply CLI load/active/sub filters to fetched units.
@@ -183,6 +319,84 @@ mod tests {
     }
 
     #[test]
+    fn action_for_active_state_toggles_runningish_units_to_stop() {
+        assert_eq!(action_for_active_state("active"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("reloading"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("refreshing"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("failed"), UnitAction::Start);
+        assert_eq!(action_for_active_state("inactive"), UnitAction::Start);
+    }
+
+    #[test]
+    fn action_for_start_stop_states_rejects_non_loadable_start_targets() {
+        for load_state in ["masked", "not-found", "bad-setting"] {
+            let err = action_for_start_stop_states("inactive", load_state)
+                .expect_err("non-loadable units should reject start");
+            assert_eq!(
+                err.to_string(),
+                format!("load state '{load_state}' does not support start")
+            );
+        }
+    }
+
+    #[test]
+    fn action_for_start_stop_states_allows_stop_for_refreshing_units() {
+        assert_eq!(
+            action_for_start_stop_states("refreshing", "loaded")
+                .expect("refreshing units should use stop workflow"),
+            UnitAction::Stop
+        );
+    }
+
+    #[test]
+    fn action_for_unit_file_state_toggles_enabledish_units_to_disable() {
+        assert_eq!(
+            action_for_unit_file_state("enabled").expect("enabled action"),
+            UnitAction::Disable
+        );
+        assert_eq!(
+            action_for_unit_file_state("linked-runtime").expect("linked-runtime action"),
+            UnitAction::Disable
+        );
+        assert_eq!(
+            action_for_unit_file_state("disabled").expect("disabled action"),
+            UnitAction::Enable
+        );
+    }
+
+    #[test]
+    fn action_for_unit_file_state_rejects_unsupported_states() {
+        for state in [
+            "static",
+            "masked",
+            "generated",
+            "transient",
+            "indirect",
+            "alias",
+        ] {
+            let err = action_for_unit_file_state(state).expect_err("unsupported state");
+            assert!(err.to_string().contains(&format!(
+                "unit file state '{state}' does not support enable/disable"
+            )));
+        }
+    }
+
+    #[test]
+    fn unit_action_args_use_non_blocking_non_interactive_flags() {
+        let args = unit_action_args(Scope::System, "demo.service", UnitAction::Restart);
+        assert_eq!(
+            args,
+            vec![
+                "restart".to_string(),
+                "--no-block".to_string(),
+                "--no-ask-password".to_string(),
+                "--system".to_string(),
+                "demo.service".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn is_full_all_only_true_when_all_three_filters_are_all() {
         let all_cfg = Config {
             load_filter: "all".to_string(),
@@ -256,6 +470,67 @@ mod tests {
     fn fetch_services_test_stub_returns_row_for_show_all() {
         let units = fetch_services(Scope::System, true).expect("stub should succeed");
         assert_eq!(units.len(), 2);
+    }
+
+    #[test]
+    fn select_action_test_stubs_return_expected_values() {
+        assert_eq!(
+            select_start_stop_action(Scope::System, "running.service").expect("start/stop action"),
+            UnitAction::Stop
+        );
+        assert_eq!(
+            select_start_stop_action(Scope::System, "refreshing.service")
+                .expect("refreshing start/stop action"),
+            UnitAction::Stop
+        );
+        assert_eq!(
+            select_enable_disable_action(Scope::System, "enabled.service")
+                .expect("enable/disable action"),
+            UnitAction::Disable
+        );
+        assert_eq!(
+            select_enable_disable_action(Scope::System, "disabled.service")
+                .expect("enable/disable action"),
+            UnitAction::Enable
+        );
+    }
+
+    #[test]
+    fn select_action_test_stubs_surface_errors() {
+        let start_stop = select_start_stop_action(Scope::System, "state-error.service")
+            .expect_err("start/stop error");
+        assert!(start_stop.to_string().contains("active state test error"));
+
+        let masked = select_start_stop_action(Scope::System, "masked.service")
+            .expect_err("masked units should reject start");
+        assert_eq!(
+            masked.to_string(),
+            "load state 'masked' does not support start"
+        );
+
+        let enable_disable = select_enable_disable_action(Scope::System, "state-error.service")
+            .expect_err("enable/disable error");
+        assert!(
+            enable_disable
+                .to_string()
+                .contains("unit file state test error")
+        );
+
+        let unsupported = select_enable_disable_action(Scope::System, "static.service")
+            .expect_err("unsupported enable/disable");
+        assert!(
+            unsupported
+                .to_string()
+                .contains("unit file state 'static' does not support enable/disable")
+        );
+    }
+
+    #[test]
+    fn run_unit_action_test_stub_supports_success_and_error() {
+        run_unit_action(Scope::System, "demo.service", UnitAction::Start).expect("action ok");
+        let err = run_unit_action(Scope::System, "action-error.service", UnitAction::Stop)
+            .expect_err("action error");
+        assert!(err.to_string().contains("unit action test error"));
     }
 
     #[test]

@@ -52,15 +52,20 @@ use std::{
 use crate::{
     cli::{parse_args, usage, version_text},
     rows::preserve_selection,
-    types::{DetailState, LoadPhase, UnitRow, ViewMode, WorkerMsg},
+    systemd::{select_enable_disable_action, select_start_stop_action},
+    types::{ConfirmationState, DetailState, LoadPhase, UnitAction, UnitRow, ViewMode, WorkerMsg},
 };
 
 #[cfg(not(test))]
 use self::{
-    input::{UiCommand, map_key},
+    input::{UiCommand, map_confirmation_key, map_key},
     render::draw_frame,
-    state::{MODE_LABEL, list_status_text, loading_units_status_text, stale_status_text},
-    workers::{spawn_detail_worker, spawn_refresh_worker},
+    state::{
+        MODE_LABEL, action_complete_status_text, action_error_status_text,
+        action_resolution_error_status_text, action_status_text, list_status_text,
+        loading_units_status_text, stale_status_text,
+    },
+    workers::{spawn_detail_worker, spawn_refresh_worker, spawn_unit_action_worker},
 };
 
 #[cfg(not(test))]
@@ -99,6 +104,7 @@ pub fn run() -> Result<()> {
     let mut phase = LoadPhase::Idle;
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut detail_worker_rx: Option<Receiver<WorkerMsg>> = None;
+    let mut action_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut loaded_once = false;
     let mut last_load_error = false;
     let mut last_load_error_message: Option<String> = None;
@@ -109,6 +115,7 @@ pub fn run() -> Result<()> {
     let mut list_table_state = TableState::default();
     let mut view_mode = ViewMode::List;
     let mut detail = DetailState::default();
+    let mut confirmation: Option<ConfirmationState> = None;
     let mut status_line = list_status_text(0, None);
 
     let res = (|| -> Result<()> {
@@ -128,6 +135,7 @@ pub fn run() -> Result<()> {
                     last_load_error_message.as_deref(),
                     refresh_requested,
                     &status_line,
+                    confirmation.as_ref(),
                     &config,
                 );
             })?;
@@ -189,7 +197,10 @@ pub fn run() -> Result<()> {
                             break;
                         }
                         Ok(
-                            WorkerMsg::DetailLogsLoaded { .. } | WorkerMsg::DetailLogsError { .. },
+                            WorkerMsg::DetailLogsLoaded { .. }
+                            | WorkerMsg::DetailLogsError { .. }
+                            | WorkerMsg::UnitActionComplete { .. }
+                            | WorkerMsg::UnitActionError { .. },
                         ) => continue,
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
@@ -239,67 +250,215 @@ pub fn run() -> Result<()> {
                 }
             }
 
+            if let Some(rx) = action_worker_rx.as_ref() {
+                let mut clear_action_worker = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(WorkerMsg::UnitActionComplete { unit, action }) => {
+                            status_line = action_complete_status_text(rows.len(), action, &unit);
+                            refresh_requested = true;
+                            clear_action_worker = true;
+                            break;
+                        }
+                        Ok(WorkerMsg::UnitActionError {
+                            unit,
+                            action,
+                            error,
+                        }) => {
+                            status_line =
+                                action_error_status_text(rows.len(), action, &unit, &error);
+                            clear_action_worker = true;
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            clear_action_worker = true;
+                            break;
+                        }
+                    }
+                }
+                if clear_action_worker {
+                    action_worker_rx = None;
+                }
+            }
+
             if event::poll(Duration::from_millis(50))?
                 && let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
-                && let Some(cmd) = map_key(view_mode, k.code)
             {
-                match cmd {
-                    UiCommand::Quit => break,
-                    UiCommand::Refresh => {
-                        refresh_requested = true;
-                        if matches!(view_mode, ViewMode::Detail)
-                            && detail_worker_rx.is_none()
-                            && !detail.loading
-                            && let Some(request_id) = detail.refresh()
-                        {
-                            detail_worker_rx = Some(spawn_detail_worker(
-                                &config,
-                                detail.unit.clone(),
-                                request_id,
-                            ));
-                        }
-                    }
-                    UiCommand::MoveDown => match view_mode {
-                        ViewMode::List => {
-                            if !rows.is_empty() {
-                                selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
+                if let Some(cmd) = confirmation
+                    .as_ref()
+                    .and_then(|pending| map_confirmation_key(pending.kind, k.code))
+                {
+                    match cmd {
+                        UiCommand::Confirm => {
+                            if action_worker_rx.is_none()
+                                && let Some(pending) = confirmation.take()
+                                && let Some(action) = pending.confirmed_action()
+                            {
+                                let status_confirmation =
+                                    ConfirmationState::confirm_action(action, pending.unit.clone());
+                                status_line = action_status_text(rows.len(), &status_confirmation);
+                                action_worker_rx =
+                                    Some(spawn_unit_action_worker(&config, pending.unit, action));
                             }
                         }
-                        ViewMode::Detail => {
-                            if !detail.logs.is_empty() {
-                                detail.scroll =
-                                    std::cmp::min(detail.scroll + 1, detail.logs.len() - 1);
+                        UiCommand::ChooseRestart => {
+                            if action_worker_rx.is_none()
+                                && let Some(pending) = confirmation.take()
+                            {
+                                let status_confirmation = ConfirmationState::confirm_action(
+                                    UnitAction::Restart,
+                                    pending.unit.clone(),
+                                );
+                                status_line = action_status_text(rows.len(), &status_confirmation);
+                                action_worker_rx = Some(spawn_unit_action_worker(
+                                    &config,
+                                    pending.unit,
+                                    UnitAction::Restart,
+                                ));
                             }
                         }
-                    },
-                    UiCommand::MoveUp => match view_mode {
-                        ViewMode::List => selected_idx = selected_idx.saturating_sub(1),
-                        ViewMode::Detail => detail.scroll = detail.scroll.saturating_sub(1),
-                    },
-                    UiCommand::OpenDetail => {
-                        if let Some(row) = rows.get(selected_idx) {
-                            let request_id = detail.begin_for_unit(row.unit.clone());
-                            detail_worker_rx = Some(spawn_detail_worker(
-                                &config,
-                                detail.unit.clone(),
-                                request_id,
-                            ));
-                            view_mode = ViewMode::Detail;
+                        UiCommand::ChooseStop => {
+                            if action_worker_rx.is_none()
+                                && let Some(pending) = confirmation.take()
+                            {
+                                let status_confirmation = ConfirmationState::confirm_action(
+                                    UnitAction::Stop,
+                                    pending.unit.clone(),
+                                );
+                                status_line = action_status_text(rows.len(), &status_confirmation);
+                                action_worker_rx = Some(spawn_unit_action_worker(
+                                    &config,
+                                    pending.unit,
+                                    UnitAction::Stop,
+                                ));
+                            }
                         }
+                        UiCommand::Cancel => {
+                            confirmation = None;
+                            status_line = list_status_text(rows.len(), None);
+                        }
+                        _ => {}
                     }
-                    UiCommand::BackToList => view_mode = ViewMode::List,
-                    UiCommand::RefreshDetail => {
-                        if detail_worker_rx.is_none()
-                            && !detail.loading
-                            && let Some(request_id) = detail.refresh()
-                        {
-                            detail_worker_rx = Some(spawn_detail_worker(
-                                &config,
-                                detail.unit.clone(),
-                                request_id,
-                            ));
+                } else if confirmation.is_none()
+                    && let Some(cmd) = map_key(view_mode, k.code)
+                {
+                    match cmd {
+                        UiCommand::Quit => break,
+                        UiCommand::Refresh => {
+                            refresh_requested = true;
+                            if matches!(view_mode, ViewMode::Detail)
+                                && detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    &config,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
+                            }
                         }
+                        UiCommand::MoveDown => match view_mode {
+                            ViewMode::List => {
+                                if !rows.is_empty() {
+                                    selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
+                                }
+                            }
+                            ViewMode::Detail => {
+                                if !detail.logs.is_empty() {
+                                    detail.scroll =
+                                        std::cmp::min(detail.scroll + 1, detail.logs.len() - 1);
+                                }
+                            }
+                        },
+                        UiCommand::MoveUp => match view_mode {
+                            ViewMode::List => selected_idx = selected_idx.saturating_sub(1),
+                            ViewMode::Detail => detail.scroll = detail.scroll.saturating_sub(1),
+                        },
+                        UiCommand::OpenDetail => {
+                            if let Some(row) = rows.get(selected_idx) {
+                                let request_id = detail.begin_for_unit(row.unit.clone());
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    &config,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
+                                view_mode = ViewMode::Detail;
+                            }
+                        }
+                        UiCommand::BackToList => view_mode = ViewMode::List,
+                        UiCommand::RefreshDetail => {
+                            if detail_worker_rx.is_none()
+                                && !detail.loading
+                                && let Some(request_id) = detail.refresh()
+                            {
+                                detail_worker_rx = Some(spawn_detail_worker(
+                                    &config,
+                                    detail.unit.clone(),
+                                    request_id,
+                                ));
+                            }
+                        }
+                        UiCommand::RequestStartStop => {
+                            if action_worker_rx.is_none()
+                                && let Some(row) = rows.get(selected_idx)
+                            {
+                                match select_start_stop_action(config.scope, &row.unit) {
+                                    Ok(UnitAction::Start) => {
+                                        confirmation = Some(ConfirmationState::confirm_action(
+                                            UnitAction::Start,
+                                            row.unit.clone(),
+                                        ));
+                                    }
+                                    Ok(UnitAction::Stop) => {
+                                        confirmation = Some(ConfirmationState::restart_or_stop(
+                                            row.unit.clone(),
+                                        ));
+                                    }
+                                    Ok(action) => {
+                                        confirmation = Some(ConfirmationState::confirm_action(
+                                            action,
+                                            row.unit.clone(),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        status_line = action_resolution_error_status_text(
+                                            rows.len(),
+                                            &row.unit,
+                                            &e.to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        UiCommand::RequestEnableDisable => {
+                            if action_worker_rx.is_none()
+                                && let Some(row) = rows.get(selected_idx)
+                            {
+                                match select_enable_disable_action(config.scope, &row.unit) {
+                                    Ok(action) => {
+                                        confirmation = Some(ConfirmationState::confirm_action(
+                                            action,
+                                            row.unit.clone(),
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        status_line = action_resolution_error_status_text(
+                                            rows.len(),
+                                            &row.unit,
+                                            &e.to_string(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        UiCommand::Confirm
+                        | UiCommand::Cancel
+                        | UiCommand::ChooseRestart
+                        | UiCommand::ChooseStop => {}
                     }
                 }
             }
@@ -395,6 +554,12 @@ mod tests {
                     state.detail_worker_active = true;
                 }
             }
+            UiCommand::RequestStartStop
+            | UiCommand::RequestEnableDisable
+            | UiCommand::Confirm
+            | UiCommand::Cancel
+            | UiCommand::ChooseRestart
+            | UiCommand::ChooseStop => {}
         }
         false
     }
@@ -459,7 +624,10 @@ mod tests {
                 state.phase = LoadPhase::Idle;
                 true
             }
-            WorkerMsg::DetailLogsLoaded { .. } | WorkerMsg::DetailLogsError { .. } => false,
+            WorkerMsg::DetailLogsLoaded { .. }
+            | WorkerMsg::DetailLogsError { .. }
+            | WorkerMsg::UnitActionComplete { .. }
+            | WorkerMsg::UnitActionError { .. } => false,
         }
     }
 

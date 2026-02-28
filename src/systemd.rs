@@ -26,7 +26,10 @@ use std::process::Command;
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
-use crate::{cli::Config, types::Scope, types::SystemctlUnit};
+use crate::{
+    cli::Config,
+    types::{Scope, SystemctlUnit, UnitAction},
+};
 
 /// Match one state value against a filter value (`all` means wildcard).
 pub fn filter_matches(value: &str, wanted: &str) -> bool {
@@ -43,6 +46,66 @@ pub fn should_fetch_all(cfg: &Config) -> bool {
     !((cfg.load_filter == "all" || cfg.load_filter == "loaded")
         && cfg.active_filter == "active"
         && cfg.sub_filter == "running")
+}
+
+/// Choose the start/stop action for a unit from its current `ActiveState`.
+pub fn action_for_active_state(active_state: &str) -> UnitAction {
+    match active_state {
+        "active" | "activating" | "deactivating" | "reloading" => UnitAction::Stop,
+        _ => UnitAction::Start,
+    }
+}
+
+/// Choose the enable/disable action for a unit from its current `UnitFileState`.
+pub fn action_for_unit_file_state(unit_file_state: &str) -> UnitAction {
+    match unit_file_state {
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias" => {
+            UnitAction::Disable
+        }
+        _ => UnitAction::Enable,
+    }
+}
+
+#[cfg(not(test))]
+fn fetch_unit_property(scope: Scope, unit: &str, property: &str) -> Result<String> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    cmd.arg("show")
+        .arg(scope.as_systemd_arg())
+        .arg("--property")
+        .arg(property)
+        .arg("--value")
+        .arg(unit);
+    let output =
+        cmd_stdout(&mut cmd).with_context(|| format!("systemctl show {property} failed"))?;
+    Ok(output.trim().to_string())
+}
+
+/// Determine whether a start or stop action should be offered for a unit.
+#[cfg(not(test))]
+pub fn select_start_stop_action(scope: Scope, unit: &str) -> Result<UnitAction> {
+    let active_state = fetch_unit_property(scope, unit, "ActiveState")?;
+    Ok(action_for_active_state(&active_state))
+}
+
+/// Determine whether an enable or disable action should be offered for a unit.
+#[cfg(not(test))]
+pub fn select_enable_disable_action(scope: Scope, unit: &str) -> Result<UnitAction> {
+    let unit_file_state = fetch_unit_property(scope, unit, "UnitFileState")?;
+    Ok(action_for_unit_file_state(&unit_file_state))
+}
+
+/// Execute one start/stop/enable/disable action for a unit.
+#[cfg(not(test))]
+pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<()> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    cmd.arg(action.as_systemctl_arg())
+        .arg(scope.as_systemd_arg())
+        .arg(unit);
+    let _ = cmd_stdout(&mut cmd)
+        .with_context(|| format!("systemctl {} failed", action.as_systemctl_arg()))?;
+    Ok(())
 }
 
 /// Query service units via `systemctl` JSON output.
@@ -103,6 +166,41 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
         ]);
     }
     Ok(Vec::new())
+}
+
+/// Determine whether a start or stop action should be offered for a unit.
+#[cfg(test)]
+pub fn select_start_stop_action(_scope: Scope, unit: &str) -> Result<UnitAction> {
+    if unit == "state-error.service" {
+        return Err(anyhow!("active state test error"));
+    }
+    if unit == "running.service" {
+        Ok(UnitAction::Stop)
+    } else {
+        Ok(UnitAction::Start)
+    }
+}
+
+/// Determine whether an enable or disable action should be offered for a unit.
+#[cfg(test)]
+pub fn select_enable_disable_action(_scope: Scope, unit: &str) -> Result<UnitAction> {
+    if unit == "state-error.service" {
+        return Err(anyhow!("unit file state test error"));
+    }
+    if unit == "enabled.service" {
+        Ok(UnitAction::Disable)
+    } else {
+        Ok(UnitAction::Enable)
+    }
+}
+
+/// Execute one start/stop/enable/disable action for a unit.
+#[cfg(test)]
+pub fn run_unit_action(_scope: Scope, unit: &str, _action: UnitAction) -> Result<()> {
+    if unit == "action-error.service" {
+        return Err(anyhow!("unit action test error"));
+    }
+    Ok(())
 }
 
 /// Apply CLI load/active/sub filters to fetched units.
@@ -183,6 +281,25 @@ mod tests {
     }
 
     #[test]
+    fn action_for_active_state_toggles_runningish_units_to_stop() {
+        assert_eq!(action_for_active_state("active"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("reloading"), UnitAction::Stop);
+        assert_eq!(action_for_active_state("failed"), UnitAction::Start);
+        assert_eq!(action_for_active_state("inactive"), UnitAction::Start);
+    }
+
+    #[test]
+    fn action_for_unit_file_state_toggles_enabledish_units_to_disable() {
+        assert_eq!(action_for_unit_file_state("enabled"), UnitAction::Disable);
+        assert_eq!(
+            action_for_unit_file_state("linked-runtime"),
+            UnitAction::Disable
+        );
+        assert_eq!(action_for_unit_file_state("disabled"), UnitAction::Enable);
+        assert_eq!(action_for_unit_file_state("static"), UnitAction::Enable);
+    }
+
+    #[test]
     fn is_full_all_only_true_when_all_three_filters_are_all() {
         let all_cfg = Config {
             load_filter: "all".to_string(),
@@ -256,6 +373,42 @@ mod tests {
     fn fetch_services_test_stub_returns_row_for_show_all() {
         let units = fetch_services(Scope::System, true).expect("stub should succeed");
         assert_eq!(units.len(), 2);
+    }
+
+    #[test]
+    fn select_action_test_stubs_return_expected_values() {
+        assert_eq!(
+            select_start_stop_action(Scope::System, "running.service").expect("start/stop action"),
+            UnitAction::Stop
+        );
+        assert_eq!(
+            select_enable_disable_action(Scope::System, "enabled.service")
+                .expect("enable/disable action"),
+            UnitAction::Disable
+        );
+    }
+
+    #[test]
+    fn select_action_test_stubs_surface_errors() {
+        let start_stop = select_start_stop_action(Scope::System, "state-error.service")
+            .expect_err("start/stop error");
+        assert!(start_stop.to_string().contains("active state test error"));
+
+        let enable_disable = select_enable_disable_action(Scope::System, "state-error.service")
+            .expect_err("enable/disable error");
+        assert!(
+            enable_disable
+                .to_string()
+                .contains("unit file state test error")
+        );
+    }
+
+    #[test]
+    fn run_unit_action_test_stub_supports_success_and_error() {
+        run_unit_action(Scope::System, "demo.service", UnitAction::Start).expect("action ok");
+        let err = run_unit_action(Scope::System, "action-error.service", UnitAction::Stop)
+            .expect_err("action error");
+        assert!(err.to_string().contains("unit action test error"));
     }
 
     #[test]

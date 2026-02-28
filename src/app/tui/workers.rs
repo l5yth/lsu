@@ -29,8 +29,8 @@ use crate::{
     cli::Config,
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
-    systemd::{fetch_services, filter_services, is_full_all, should_fetch_all},
-    types::{UnitRow, WorkerMsg},
+    systemd::{fetch_services, filter_services, is_full_all, run_unit_action, should_fetch_all},
+    types::{UnitAction, UnitRow, WorkerMsg},
 };
 
 /// Spawn a background worker that fetches units and batched log previews.
@@ -116,6 +116,29 @@ pub fn spawn_detail_worker(config: &Config, unit: String, request_id: u64) -> Re
             let _ = tx.send(WorkerMsg::DetailLogsError {
                 unit,
                 request_id,
+                error: e.to_string(),
+            });
+        }
+    });
+    rx
+}
+
+/// Spawn a background worker that executes one unit action.
+pub fn spawn_unit_action_worker(
+    config: &Config,
+    unit: String,
+    action: UnitAction,
+) -> Receiver<WorkerMsg> {
+    let (tx, rx) = mpsc::channel();
+    let scope = config.scope;
+    thread::spawn(move || match run_unit_action(scope, &unit, action) {
+        Ok(()) => {
+            let _ = tx.send(WorkerMsg::UnitActionComplete { unit, action });
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::UnitActionError {
+                unit,
+                action,
                 error: e.to_string(),
             });
         }
@@ -305,6 +328,65 @@ mod tests {
                 assert!(error.contains("detail journal test error"));
             }
             other => panic!("expected DetailLogsError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unit_action_worker_emits_completion_on_success() {
+        let rx = spawn_unit_action_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            "demo.service".to_string(),
+            UnitAction::Start,
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("action msg")
+        {
+            WorkerMsg::UnitActionComplete { unit, action } => {
+                assert_eq!(unit, "demo.service");
+                assert_eq!(action, UnitAction::Start);
+            }
+            other => panic!("expected UnitActionComplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unit_action_worker_emits_error_on_failure() {
+        let rx = spawn_unit_action_worker(
+            &Config {
+                load_filter: "loaded".to_string(),
+                active_filter: "active".to_string(),
+                sub_filter: "running".to_string(),
+                show_help: false,
+                show_version: false,
+                debug_tui: false,
+                scope: Scope::System,
+            },
+            "action-error.service".to_string(),
+            UnitAction::Stop,
+        );
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("action error msg")
+        {
+            WorkerMsg::UnitActionError {
+                unit,
+                action,
+                error,
+            } => {
+                assert_eq!(unit, "action-error.service");
+                assert_eq!(action, UnitAction::Stop);
+                assert!(error.contains("unit action test error"));
+            }
+            other => panic!("expected UnitActionError, got {other:?}"),
         }
     }
 

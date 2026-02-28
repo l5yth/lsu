@@ -18,12 +18,13 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
+use super::state::confirmation_prompt_text;
 use crate::{
     cli::Config,
-    types::{DetailState, LoadPhase, UnitRow, ViewMode},
+    types::{ConfirmationState, DetailState, LoadPhase, UnitRow, ViewMode},
 };
 
 /// Render one UI frame from runtime state.
@@ -42,6 +43,7 @@ pub fn draw_frame(
     last_load_error_message: Option<&str>,
     refresh_requested: bool,
     status_line: &str,
+    confirmation: Option<&ConfirmationState>,
     config: &Config,
 ) {
     let size = f.area();
@@ -186,6 +188,36 @@ pub fn draw_frame(
             f.render_widget(footer, chunks[1]);
         }
     }
+
+    if let Some(confirmation) = confirmation {
+        let area = centered_rect(70, 5, size);
+        f.render_widget(Clear, area);
+        let prompt = Paragraph::new(confirmation_prompt_text(confirmation))
+            .block(Block::default().borders(Borders::ALL).title("confirm"))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        f.render_widget(prompt, area);
+    }
+}
+
+fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Percentage(width_percent),
+            Constraint::Fill(1),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
 }
 
 #[cfg(test)]
@@ -240,6 +272,7 @@ mod tests {
                     None,
                     false,
                     "services: 1",
+                    None,
                     &sample_config(),
                 )
             })
@@ -273,6 +306,7 @@ mod tests {
                     None,
                     false,
                     "services: 1",
+                    None,
                     &sample_config(),
                 )
             })
@@ -302,6 +336,7 @@ mod tests {
                     None,
                     false,
                     "services: 0",
+                    None,
                     &sample_config(),
                 )
             })
@@ -323,6 +358,7 @@ mod tests {
                     Some("boom"),
                     false,
                     "services: 0",
+                    None,
                     &sample_config(),
                 )
             })
@@ -351,6 +387,40 @@ mod tests {
                     Some("stale"),
                     false,
                     "services: 1",
+                    None,
+                    &sample_config(),
+                )
+            })
+            .expect("draw");
+    }
+
+    #[test]
+    fn draw_frame_renders_confirmation_overlay() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TableState::default();
+        let detail = DetailState::default();
+        let confirmation = ConfirmationState::confirm_action(
+            crate::types::UnitAction::Enable,
+            "a.service".to_string(),
+        );
+        terminal
+            .draw(|f| {
+                draw_frame(
+                    f,
+                    ViewMode::List,
+                    "services",
+                    &[sample_row()],
+                    0,
+                    &mut state,
+                    &detail,
+                    LoadPhase::Idle,
+                    true,
+                    false,
+                    None,
+                    false,
+                    "services: 1",
+                    Some(&confirmation),
                     &sample_config(),
                 )
             })

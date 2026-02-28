@@ -20,7 +20,7 @@
 use anyhow::{Context, bail};
 use anyhow::{Result, anyhow};
 #[cfg(not(test))]
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
@@ -94,14 +94,25 @@ pub fn select_enable_disable_action(scope: Scope, unit: &str) -> Result<UnitActi
     action_for_unit_file_state(&unit_file_state)
 }
 
+fn unit_action_args(scope: Scope, unit: &str, action: UnitAction) -> Vec<String> {
+    vec![
+        action.as_systemctl_arg().to_string(),
+        "--no-block".to_string(),
+        "--no-ask-password".to_string(),
+        scope.as_systemd_arg().to_string(),
+        unit.to_string(),
+    ]
+}
+
 /// Execute one start/stop/enable/disable action for a unit.
 #[cfg(not(test))]
 pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<()> {
     let systemctl = resolve_trusted_binary("systemctl")?;
     let mut cmd = Command::new(systemctl);
-    cmd.arg(action.as_systemctl_arg())
-        .arg(scope.as_systemd_arg())
-        .arg(unit);
+    for arg in unit_action_args(scope, unit, action) {
+        cmd.arg(arg);
+    }
+    cmd.stdin(Stdio::null());
     let _ = cmd_stdout(&mut cmd)
         .with_context(|| format!("systemctl {} failed", action.as_systemctl_arg()))?;
     Ok(())
@@ -322,6 +333,21 @@ mod tests {
                 "unit file state '{state}' does not support enable/disable"
             )));
         }
+    }
+
+    #[test]
+    fn unit_action_args_use_non_blocking_non_interactive_flags() {
+        let args = unit_action_args(Scope::System, "demo.service", UnitAction::Restart);
+        assert_eq!(
+            args,
+            vec![
+                "restart".to_string(),
+                "--no-block".to_string(),
+                "--no-ask-password".to_string(),
+                "--system".to_string(),
+                "demo.service".to_string(),
+            ]
+        );
     }
 
     #[test]

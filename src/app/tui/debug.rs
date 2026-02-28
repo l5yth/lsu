@@ -285,10 +285,21 @@ fn resolve_debug_action_confirmation(
                         template.load
                     ))
                 }
-                "loaded" => Ok(ConfirmationState::confirm_action(UnitAction::Enable, unit)),
-                _ => Ok(ConfirmationState::confirm_action(UnitAction::Enable, unit)),
+                _ => Ok(ConfirmationState::confirm_action(
+                    debug_enable_disable_action(template),
+                    unit,
+                )),
             }
         }
+    }
+}
+
+fn debug_enable_disable_action(template: DebugUnitTemplate) -> UnitAction {
+    match template.active {
+        "active" | "activating" | "deactivating" | "reloading" | "refreshing" => {
+            UnitAction::Disable
+        }
+        _ => UnitAction::Enable,
     }
 }
 
@@ -537,6 +548,41 @@ mod tests {
             WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
                 assert_eq!(unit, "debug-api-gateway.service");
                 assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn debug_enable_disable_action_reaches_disable_and_enable_branches() {
+        let active_template = template_for_unit("debug-api-gateway.service").expect("template");
+        assert_eq!(
+            debug_enable_disable_action(active_template),
+            UnitAction::Disable
+        );
+
+        let inactive_template = template_for_unit("debug-cold-storage.service").expect("template");
+        assert_eq!(
+            debug_enable_disable_action(inactive_template),
+            UnitAction::Enable
+        );
+    }
+
+    #[test]
+    fn spawn_debug_action_resolution_worker_can_resolve_disable_prompt() {
+        let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::EnableDisable {
+            unit: "debug-api-gateway.service".to_string(),
+        });
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution message")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(
+                    confirmation,
+                    ConfirmationState::confirm_action(UnitAction::Disable, unit)
+                );
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
         }

@@ -64,15 +64,15 @@ pub fn action_resolution_status_text(rows: usize, unit: &str) -> String {
     format!("{MODE_LABEL}: {rows} | resolving action for {unit}...")
 }
 
-/// Build the footer status text after a unit action completes.
-pub fn action_complete_status_text(
+/// Build the footer status text after a unit action request is queued.
+pub fn action_queued_status_text(
     rows: usize,
     action: crate::types::UnitAction,
     unit: &str,
 ) -> String {
     format!(
-        "{MODE_LABEL}: {rows} | {} {} | {}",
-        action.past_tense(),
+        "{MODE_LABEL}: {rows} | queued {} for {} | {}",
+        action.as_systemctl_arg(),
         unit,
         list_controls_text()
     )
@@ -168,10 +168,10 @@ mod tests {
     }
 
     #[test]
-    fn action_complete_and_error_status_include_controls() {
-        let complete = action_complete_status_text(4, UnitAction::Enable, "demo.service");
-        assert!(complete.contains("enabled demo.service"));
-        assert!(complete.contains("e: enable/disable"));
+    fn action_queued_and_error_status_include_controls() {
+        let queued = action_queued_status_text(4, UnitAction::Enable, "demo.service");
+        assert!(queued.contains("queued enable for demo.service"));
+        assert!(queued.contains("e: enable/disable"));
 
         let error = action_error_status_text(4, UnitAction::Stop, "demo.service", "boom");
         assert!(error.contains("failed to stop demo.service: boom"));

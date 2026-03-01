@@ -336,11 +336,11 @@ pub enum WorkerMsg {
         /// Error text to show in the UI.
         error: String,
     },
-    /// A unit action completed successfully.
-    UnitActionComplete {
-        /// Unit for which the action was executed.
+    /// A unit action request was accepted and queued successfully.
+    UnitActionQueued {
+        /// Unit for which the action was queued.
         unit: String,
-        /// Executed action.
+        /// Queued action.
         action: UnitAction,
     },
     /// A unit action failed.

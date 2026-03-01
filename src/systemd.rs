@@ -157,7 +157,7 @@ fn unit_action_args(scope: Scope, unit: &str, action: UnitAction) -> Vec<String>
     ]
 }
 
-/// Execute one start/stop/enable/disable action for a unit.
+/// Queue one non-blocking start/stop/enable/disable action for a unit.
 #[cfg(not(test))]
 pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<()> {
     let systemctl = resolve_trusted_binary("systemctl")?;
@@ -265,7 +265,7 @@ pub fn select_enable_disable_action(_scope: Scope, unit: &str) -> Result<UnitAct
     }
 }
 
-/// Execute one start/stop/enable/disable action for a unit.
+/// Queue one non-blocking start/stop/enable/disable action for a unit.
 #[cfg(test)]
 pub fn run_unit_action(_scope: Scope, unit: &str, _action: UnitAction) -> Result<()> {
     if unit == "action-error.service" {

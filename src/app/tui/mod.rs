@@ -183,12 +183,12 @@ fn apply_action_worker_msg(
     msg: crate::types::WorkerMsg,
 ) -> bool {
     match msg {
-        crate::types::WorkerMsg::UnitActionComplete { unit, action } => {
+        crate::types::WorkerMsg::UnitActionQueued { unit, action } => {
             *refresh_requested = true;
             set_status_line(
                 status_line,
                 status_line_overrides_stale,
-                self::state::action_complete_status_text(rows_len, action, &unit),
+                self::state::action_queued_status_text(rows_len, action, &unit),
                 true,
             );
             true
@@ -359,7 +359,7 @@ pub fn run() -> Result<()> {
                             | WorkerMsg::DetailLogsError { .. }
                             | WorkerMsg::ActionConfirmationReady { .. }
                             | WorkerMsg::ActionResolutionError { .. }
-                            | WorkerMsg::UnitActionComplete { .. }
+                            | WorkerMsg::UnitActionQueued { .. }
                             | WorkerMsg::UnitActionError { .. },
                         ) => continue,
                         Err(TryRecvError::Empty) => break,
@@ -875,7 +875,7 @@ mod tests {
             | WorkerMsg::DetailLogsError { .. }
             | WorkerMsg::ActionConfirmationReady { .. }
             | WorkerMsg::ActionResolutionError { .. }
-            | WorkerMsg::UnitActionComplete { .. }
+            | WorkerMsg::UnitActionQueued { .. }
             | WorkerMsg::UnitActionError { .. } => false,
         }
     }
@@ -1118,13 +1118,13 @@ mod tests {
             &mut status_line,
             &mut override_stale,
             3,
-            WorkerMsg::UnitActionComplete {
+            WorkerMsg::UnitActionQueued {
                 unit: "demo.service".to_string(),
                 action: UnitAction::Restart,
             },
         ));
         assert!(refresh_requested);
-        assert!(status_line.contains("restarted demo.service"));
+        assert!(status_line.contains("queued restart for demo.service"));
         assert!(override_stale);
 
         refresh_requested = false;

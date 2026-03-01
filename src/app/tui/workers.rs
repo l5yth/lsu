@@ -144,7 +144,7 @@ pub fn spawn_unit_action_worker(
     let scope = config.scope;
     thread::spawn(move || match run_unit_action(scope, &unit, action) {
         Ok(()) => {
-            let _ = tx.send(WorkerMsg::UnitActionComplete { unit, action });
+            let _ = tx.send(WorkerMsg::UnitActionQueued { unit, action });
         }
         Err(e) => {
             let _ = tx.send(WorkerMsg::UnitActionError {
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_action_worker_emits_completion_on_success() {
+    fn unit_action_worker_emits_queued_on_success() {
         let rx = spawn_unit_action_worker(
             &Config {
                 load_filter: "loaded".to_string(),
@@ -409,11 +409,11 @@ mod tests {
             .recv_timeout(Duration::from_millis(500))
             .expect("action msg")
         {
-            WorkerMsg::UnitActionComplete { unit, action } => {
+            WorkerMsg::UnitActionQueued { unit, action } => {
                 assert_eq!(unit, "demo.service");
                 assert_eq!(action, UnitAction::Start);
             }
-            other => panic!("expected UnitActionComplete, got {other:?}"),
+            other => panic!("expected UnitActionQueued, got {other:?}"),
         }
     }
 
@@ -678,11 +678,11 @@ mod tests {
             .recv_timeout(Duration::from_millis(500))
             .expect("action msg")
         {
-            WorkerMsg::UnitActionComplete { unit, action } => {
+            WorkerMsg::UnitActionQueued { unit, action } => {
                 assert_eq!(unit, "debug-api-gateway.service");
                 assert_eq!(action, UnitAction::Stop);
             }
-            other => panic!("expected UnitActionComplete, got {other:?}"),
+            other => panic!("expected UnitActionQueued, got {other:?}"),
         }
     }
 }

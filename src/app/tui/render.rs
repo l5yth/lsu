@@ -21,7 +21,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 
-use super::state::confirmation_prompt_text;
+use super::state::{confirmation_prompt_text, stale_status_with_error_text};
 use crate::{
     cli::Config,
     types::{ConfirmationState, DetailState, LoadPhase, UnitRow, ViewMode},
@@ -137,15 +137,7 @@ pub fn draw_frame(
                 && last_load_error
                 && matches!(phase, LoadPhase::Idle)
             {
-                match last_load_error_message {
-                    Some(err) if !err.trim().is_empty() => {
-                        format!(
-                            "refresh failed (stale data): {} | r: refresh | q: quit",
-                            err
-                        )
-                    }
-                    _ => "refresh failed (stale data) | r: refresh | q: quit".to_string(),
-                }
+                stale_status_with_error_text(rows.len(), last_load_error_message)
             } else {
                 status_line.to_string()
             };
@@ -228,6 +220,19 @@ fn centered_rect(width_percent: u16, height: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn rendered_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        let area = *buffer.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn sample_config() -> Config {
         Config {
@@ -375,7 +380,7 @@ mod tests {
 
     #[test]
     fn draw_frame_renders_stale_footer_with_rows() {
-        let backend = TestBackend::new(120, 30);
+        let backend = TestBackend::new(200, 30);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut state = TableState::default();
         let detail = DetailState::default();
@@ -401,6 +406,10 @@ mod tests {
                 )
             })
             .expect("draw");
+        let text = rendered_text(&terminal);
+        assert!(text.contains("refresh failed (stale data): stale"));
+        assert!(text.contains("s: start/restart/stop"));
+        assert!(text.contains("e: enable/disable"));
     }
 
     #[test]

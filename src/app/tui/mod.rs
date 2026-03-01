@@ -40,12 +40,12 @@ use crossterm::{
 };
 #[cfg(not(test))]
 use ratatui::{prelude::*, widgets::TableState};
+use std::time::{Duration, Instant};
 #[cfg(not(test))]
 use std::{
     collections::HashMap,
     env, io,
     sync::mpsc::{Receiver, TryRecvError},
-    time::Duration,
 };
 
 #[cfg(not(test))]
@@ -215,7 +215,7 @@ fn apply_action_resolution_msg(
 }
 
 fn apply_action_worker_msg(
-    _refresh_requested: &mut bool,
+    refresh_requested: &mut bool,
     status_line: &mut String,
     status_line_overrides_stale: &mut bool,
     rows_len: usize,
@@ -223,6 +223,7 @@ fn apply_action_worker_msg(
 ) -> bool {
     match msg {
         crate::types::WorkerMsg::UnitActionQueued { unit, action } => {
+            *refresh_requested = true;
             set_status_line(
                 status_line,
                 status_line_overrides_stale,
@@ -248,6 +249,33 @@ fn apply_action_worker_msg(
     }
 }
 
+const UNIT_ACTION_REFRESH_DELAY: Duration = Duration::from_millis(500);
+
+fn defer_queued_action_refresh(
+    refresh_requested: &mut bool,
+    queued_action_refresh_deadline: &mut Option<Instant>,
+    refresh_was_requested: bool,
+    now: Instant,
+) {
+    if !refresh_was_requested && *refresh_requested {
+        *refresh_requested = false;
+        *queued_action_refresh_deadline = Some(now + UNIT_ACTION_REFRESH_DELAY);
+    }
+}
+
+fn activate_queued_action_refresh(
+    refresh_requested: &mut bool,
+    queued_action_refresh_deadline: &mut Option<Instant>,
+    now: Instant,
+) {
+    if let Some(deadline) = queued_action_refresh_deadline
+        && *deadline <= now
+    {
+        *refresh_requested = true;
+        *queued_action_refresh_deadline = None;
+    }
+}
+
 /// Run the interactive terminal UI.
 #[cfg(not(test))]
 pub fn run() -> Result<()> {
@@ -269,6 +297,7 @@ pub fn run() -> Result<()> {
     let mut detail_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut action_resolution_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut action_worker_rx: Option<Receiver<WorkerMsg>> = None;
+    let mut queued_action_refresh_deadline: Option<Instant> = None;
     let mut loaded_once = false;
     let mut last_load_error = false;
     let mut last_load_error_message: Option<String> = None;
@@ -287,6 +316,12 @@ pub fn run() -> Result<()> {
 
     let res = (|| -> Result<()> {
         loop {
+            activate_queued_action_refresh(
+                &mut refresh_requested,
+                &mut queued_action_refresh_deadline,
+                Instant::now(),
+            );
+
             terminal.draw(|f| {
                 draw_frame(
                     f,
@@ -318,6 +353,7 @@ pub fn run() -> Result<()> {
                     loading_units_status_text(),
                     false,
                 );
+                queued_action_refresh_deadline = None;
                 refresh_requested = false;
                 worker_rx = Some(spawn_refresh_worker(config.clone(), rows.clone()));
             }
@@ -503,12 +539,19 @@ pub fn run() -> Result<()> {
                 loop {
                     match rx.try_recv() {
                         Ok(msg) => {
+                            let refresh_was_requested = refresh_requested;
                             clear_action_worker = apply_action_worker_msg(
                                 &mut refresh_requested,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 rows.len(),
                                 msg,
+                            );
+                            defer_queued_action_refresh(
+                                &mut refresh_requested,
+                                &mut queued_action_refresh_deadline,
+                                refresh_was_requested,
+                                Instant::now(),
                             );
                             if clear_action_worker {
                                 break;
@@ -618,6 +661,7 @@ pub fn run() -> Result<()> {
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                             );
+                            queued_action_refresh_deadline = None;
                             refresh_requested = true;
                             if matches!(view_mode, ViewMode::Detail)
                                 && detail_worker_rx.is_none()
@@ -763,8 +807,9 @@ mod tests {
     use super::input::UiCommand;
     use super::state::{list_status_text, stale_status_text};
     use super::{
-        ActionResolutionUiState, apply_action_resolution_msg, apply_action_worker_msg,
-        cancel_pending_action_resolution, restore_list_status_line, set_list_status_line,
+        ActionResolutionUiState, UNIT_ACTION_REFRESH_DELAY, activate_queued_action_refresh,
+        apply_action_resolution_msg, apply_action_worker_msg, cancel_pending_action_resolution,
+        defer_queued_action_refresh, restore_list_status_line, set_list_status_line,
         set_status_line,
     };
     use crate::rows::preserve_selection;
@@ -773,6 +818,7 @@ mod tests {
     };
     use ratatui::prelude::Style;
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
 
     struct TestUiState {
         view_mode: ViewMode,
@@ -1359,7 +1405,7 @@ mod tests {
                 action: UnitAction::Restart,
             },
         ));
-        assert!(!refresh_requested);
+        assert!(refresh_requested);
         assert!(status_line.contains("queued restart for demo.service"));
         assert!(override_stale);
 
@@ -1399,6 +1445,52 @@ mod tests {
         assert!(refresh_requested);
         assert!(status_line.contains("queued start for demo.service"));
         assert!(override_stale);
+    }
+
+    #[test]
+    fn defer_queued_action_refresh_schedules_delayed_list_reload() {
+        let mut refresh_requested = true;
+        let mut queued_deadline = None;
+        let now = Instant::now();
+
+        defer_queued_action_refresh(&mut refresh_requested, &mut queued_deadline, false, now);
+
+        assert!(!refresh_requested);
+        assert_eq!(
+            queued_deadline.expect("deadline").duration_since(now),
+            UNIT_ACTION_REFRESH_DELAY
+        );
+    }
+
+    #[test]
+    fn defer_queued_action_refresh_preserves_existing_refresh_request() {
+        let mut refresh_requested = true;
+        let mut queued_deadline = None;
+
+        defer_queued_action_refresh(
+            &mut refresh_requested,
+            &mut queued_deadline,
+            true,
+            Instant::now(),
+        );
+
+        assert!(refresh_requested);
+        assert!(queued_deadline.is_none());
+    }
+
+    #[test]
+    fn activate_queued_action_refresh_promotes_elapsed_deadline() {
+        let mut refresh_requested = false;
+        let mut queued_deadline = Some(Instant::now() - Duration::from_millis(1));
+
+        activate_queued_action_refresh(
+            &mut refresh_requested,
+            &mut queued_deadline,
+            Instant::now(),
+        );
+
+        assert!(refresh_requested);
+        assert!(queued_deadline.is_none());
     }
 
     #[test]

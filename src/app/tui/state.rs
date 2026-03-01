@@ -39,9 +39,19 @@ pub fn list_status_text(rows: usize, logs_progress: Option<(usize, usize)>) -> S
 
 /// Build the stale-data status text after a failed refresh.
 pub fn stale_status_text(rows: usize) -> String {
+    stale_status_with_error_text(rows, None)
+}
+
+/// Build the stale-data status text after a failed refresh, optionally including the error text.
+pub fn stale_status_with_error_text(rows: usize, error: Option<&str>) -> String {
+    let error_suffix = error
+        .filter(|err| !err.trim().is_empty())
+        .map(|err| format!(": {err}"))
+        .unwrap_or_default();
     format!(
-        "{MODE_LABEL}: {rows} | refresh failed (stale data) | {}",
-        list_controls_text()
+        "{MODE_LABEL}: {rows} | refresh failed (stale data){} | {}",
+        error_suffix,
+        list_controls_text(),
     )
 }
 
@@ -136,6 +146,14 @@ mod tests {
     fn stale_status_text_mentions_stale_data() {
         let s = stale_status_text(4);
         assert!(s.contains("refresh failed (stale data)"));
+    }
+
+    #[test]
+    fn stale_status_with_error_text_mentions_error_and_action_keys() {
+        let s = stale_status_with_error_text(4, Some("boom"));
+        assert!(s.contains("refresh failed (stale data): boom"));
+        assert!(s.contains("s: start/restart/stop"));
+        assert!(s.contains("e: enable/disable"));
     }
 
     #[test]

@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     rows::{seed_logs_from_previous, sort_rows, status_dot},
-    systemd::action_for_start_stop_states,
+    systemd::{action_for_start_stop_states, action_for_unit_file_state},
     types::{
         ActionResolutionRequest, ConfirmationState, DetailLogEntry, UnitAction, UnitRow, WorkerMsg,
     },
@@ -37,6 +37,7 @@ const LOG_BATCH_SIZE: usize = 7;
 struct DebugUnitTemplate {
     slug: &'static str,
     load: &'static str,
+    unit_file_state: &'static str,
     active: &'static str,
     sub: &'static str,
     description: &'static str,
@@ -47,6 +48,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "api-gateway",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "active",
         sub: "running",
         description: "Synthetic API gateway with healthy steady-state status",
@@ -55,6 +57,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "asset-compiler",
         load: "loaded",
+        unit_file_state: "indirect",
         active: "active",
         sub: "exited",
         description: "One-shot asset compiler to exercise warm yellow states",
@@ -63,6 +66,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "backup-primer",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "activating",
         sub: "start-pre",
         description: "Backup preparer paused in pre-start checks",
@@ -71,6 +75,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "cache-warmer",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "reloading",
         sub: "reload",
         description: "Cache warmer cycling through a synthetic live reload",
@@ -79,6 +84,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "cleanup-runner",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "deactivating",
         sub: "stop-sigterm",
         description: "Graceful shutdown state for key handling checks",
@@ -87,6 +93,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "cold-storage",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "inactive",
         sub: "dead",
         description: "Idle cold-storage worker rendered in gray",
@@ -95,6 +102,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "crash-loop",
         load: "loaded",
+        unit_file_state: "disabled",
         active: "failed",
         sub: "failed",
         description: "Failing unit for saturated red error states",
@@ -103,6 +111,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "db-migrate",
         load: "loaded",
+        unit_file_state: "enabled",
         active: "activating",
         sub: "start-post",
         description: "Migration worker still in post-start staging",
@@ -111,6 +120,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "desktop-sync",
         load: "stub",
+        unit_file_state: "stub",
         active: "maintenance",
         sub: "condition",
         description: "Condition-blocked user sync service to test blue states",
@@ -119,6 +129,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "edge-proxy",
         load: "masked",
+        unit_file_state: "masked",
         active: "inactive",
         sub: "dead",
         description: "Masked edge proxy with muted gray rows",
@@ -127,6 +138,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "event-fanout",
         load: "loaded",
+        unit_file_state: "enabled-runtime",
         active: "refreshing",
         sub: "reload-notify",
         description: "Refreshing fanout worker with notify-based reloads",
@@ -135,6 +147,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "ghost-printer",
         load: "not-found",
+        unit_file_state: "not-found",
         active: "inactive",
         sub: "dead",
         description: "Missing printer backend to exercise not-found load states",
@@ -143,6 +156,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "metrics-rollup",
         load: "merged",
+        unit_file_state: "merged",
         active: "active",
         sub: "running",
         description: "Merged metrics rollup service for alternate load states",
@@ -151,6 +165,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "notification-drain",
         load: "bad-setting",
+        unit_file_state: "bad-setting",
         active: "failed",
         sub: "auto-restart",
         description: "Broken configuration with restart churn",
@@ -159,6 +174,7 @@ const DEBUG_UNIT_TEMPLATES: [DebugUnitTemplate; 15] = [
     DebugUnitTemplate {
         slug: "orphan-reconciler",
         load: "error",
+        unit_file_state: "error",
         active: "maintenance",
         sub: "cleaning",
         description: "Loader error plus maintenance cleanup path",
@@ -273,35 +289,25 @@ fn resolve_debug_action_confirmation(
             Ok(match action {
                 UnitAction::Stop => ConfirmationState::restart_or_stop(unit),
                 UnitAction::Start => ConfirmationState::confirm_action(action, unit),
-                UnitAction::Restart | UnitAction::Enable | UnitAction::Disable => unreachable!(),
+                UnitAction::Restart
+                | UnitAction::Enable
+                | UnitAction::Disable
+                | UnitAction::DisableRuntime => unreachable!(),
             })
         }
         ActionResolutionRequest::EnableDisable { unit } => {
             let template =
                 template_for_unit(&unit).ok_or_else(|| anyhow::anyhow!("unknown debug unit"))?;
-            match template.load {
-                "masked" | "not-found" | "error" | "merged" | "bad-setting" | "stub" => {
-                    Err(anyhow::anyhow!(
-                        "unit file state '{}' does not support enable/disable",
-                        template.load
-                    ))
-                }
-                _ => Ok(ConfirmationState::confirm_action(
-                    debug_enable_disable_action(template),
-                    unit,
-                )),
-            }
+            Ok(ConfirmationState::confirm_action(
+                debug_enable_disable_action(template)?,
+                unit,
+            ))
         }
     }
 }
 
-fn debug_enable_disable_action(template: DebugUnitTemplate) -> UnitAction {
-    match template.active {
-        "active" | "activating" | "deactivating" | "reloading" | "refreshing" => {
-            UnitAction::Disable
-        }
-        _ => UnitAction::Enable,
-    }
+fn debug_enable_disable_action(template: DebugUnitTemplate) -> anyhow::Result<UnitAction> {
+    action_for_unit_file_state(template.unit_file_state)
 }
 
 /// Spawn a background worker that emits fake rows and fake preview logs.
@@ -590,15 +596,16 @@ mod tests {
 
     #[test]
     fn debug_enable_disable_action_reaches_disable_and_enable_branches() {
-        let active_template = template_for_unit("debug-api-gateway.service").expect("template");
+        let active_template = template_for_unit("debug-cold-storage.service").expect("template");
         assert_eq!(
-            debug_enable_disable_action(active_template),
+            debug_enable_disable_action(active_template).expect("enabled template should disable"),
             UnitAction::Disable
         );
 
-        let inactive_template = template_for_unit("debug-cold-storage.service").expect("template");
+        let inactive_template = template_for_unit("debug-crash-loop.service").expect("template");
         assert_eq!(
-            debug_enable_disable_action(inactive_template),
+            debug_enable_disable_action(inactive_template)
+                .expect("disabled template should enable"),
             UnitAction::Enable
         );
     }
@@ -606,14 +613,34 @@ mod tests {
     #[test]
     fn spawn_debug_action_resolution_worker_can_resolve_disable_prompt() {
         let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::EnableDisable {
-            unit: "debug-api-gateway.service".to_string(),
+            unit: "debug-event-fanout.service".to_string(),
         });
         match rx
             .recv_timeout(Duration::from_millis(500))
             .expect("resolution message")
         {
             WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
-                assert_eq!(unit, "debug-api-gateway.service");
+                assert_eq!(unit, "debug-event-fanout.service");
+                assert_eq!(
+                    confirmation,
+                    ConfirmationState::confirm_action(UnitAction::DisableRuntime, unit)
+                );
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_debug_action_resolution_worker_uses_unit_file_state_for_inactive_units() {
+        let rx = spawn_debug_action_resolution_worker(ActionResolutionRequest::EnableDisable {
+            unit: "debug-cold-storage.service".to_string(),
+        });
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("resolution message")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "debug-cold-storage.service");
                 assert_eq!(
                     confirmation,
                     ConfirmationState::confirm_action(UnitAction::Disable, unit)

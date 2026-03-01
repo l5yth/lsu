@@ -596,6 +596,26 @@ mod tests {
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
         }
 
+        let runtime_rx = spawn_action_resolution_worker(
+            &cfg,
+            ActionResolutionRequest::EnableDisable {
+                unit: "enabled-runtime.service".to_string(),
+            },
+        );
+        match runtime_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("runtime enable/disable resolution msg")
+        {
+            WorkerMsg::ActionConfirmationReady { unit, confirmation } => {
+                assert_eq!(unit, "enabled-runtime.service");
+                assert_eq!(
+                    confirmation,
+                    ConfirmationState::confirm_action(UnitAction::DisableRuntime, unit)
+                );
+            }
+            other => panic!("expected ActionConfirmationReady, got {other:?}"),
+        }
+
         let err_rx = spawn_action_resolution_worker(
             &cfg,
             ActionResolutionRequest::EnableDisable {

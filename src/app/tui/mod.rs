@@ -611,6 +611,13 @@ pub fn run() -> Result<()> {
                     match cmd {
                         UiCommand::Quit => break,
                         UiCommand::Refresh => {
+                            cancel_pending_action_resolution(
+                                &mut action_resolution_worker_rx,
+                                &list_status_line,
+                                list_status_line_overrides_stale,
+                                &mut status_line,
+                                &mut status_line_overrides_stale,
+                            );
                             refresh_requested = true;
                             if matches!(view_mode, ViewMode::Detail)
                                 && detail_worker_rx.is_none()
@@ -798,6 +805,13 @@ mod tests {
         match cmd {
             UiCommand::Quit => return true,
             UiCommand::Refresh => {
+                cancel_pending_action_resolution(
+                    &mut state.action_resolution_active,
+                    &state.list_status_line,
+                    state.list_status_line_overrides_stale,
+                    &mut state.status_line,
+                    &mut state.status_line_overrides_stale,
+                );
                 state.refresh_requested = true;
                 if matches!(state.view_mode, ViewMode::Detail)
                     && !state.detail_worker_active
@@ -1304,6 +1318,29 @@ mod tests {
         assert_eq!(state.detail.scroll, 0);
         assert!(!apply_command(&mut state, UiCommand::BackToList));
         assert!(matches!(state.view_mode, ViewMode::List));
+    }
+
+    #[test]
+    fn refresh_cancels_pending_action_resolution_and_restores_list_status() {
+        let mut state = TestUiState {
+            view_mode: ViewMode::List,
+            rows: vec![row("a.service")],
+            selected_idx: 0,
+            detail: DetailState::default(),
+            detail_worker_active: false,
+            action_resolution_active: Some(()),
+            refresh_requested: false,
+            list_status_line: "services: 1 | logs: 1/1".to_string(),
+            list_status_line_overrides_stale: false,
+            status_line: "services: 1 | resolving action for a.service...".to_string(),
+            status_line_overrides_stale: true,
+        };
+
+        assert!(!apply_command(&mut state, UiCommand::Refresh));
+        assert!(state.refresh_requested);
+        assert!(state.action_resolution_active.is_none());
+        assert_eq!(state.status_line, state.list_status_line);
+        assert!(!state.status_line_overrides_stale);
     }
 
     #[test]

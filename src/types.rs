@@ -116,6 +116,8 @@ pub enum UnitAction {
     Enable,
     /// Disable the unit.
     Disable,
+    /// Disable the unit for the current boot only.
+    DisableRuntime,
 }
 
 impl UnitAction {
@@ -126,7 +128,7 @@ impl UnitAction {
             Self::Restart => "restart",
             Self::Stop => "stop",
             Self::Enable => "enable",
-            Self::Disable => "disable",
+            Self::Disable | Self::DisableRuntime => "disable",
         }
     }
 
@@ -137,7 +139,7 @@ impl UnitAction {
             Self::Restart => "restarting",
             Self::Stop => "stopping",
             Self::Enable => "enabling",
-            Self::Disable => "disabling",
+            Self::Disable | Self::DisableRuntime => "disabling",
         }
     }
 
@@ -148,8 +150,13 @@ impl UnitAction {
             Self::Restart => "restarted",
             Self::Stop => "stopped",
             Self::Enable => "enabled",
-            Self::Disable => "disabled",
+            Self::Disable | Self::DisableRuntime => "disabled",
         }
+    }
+
+    /// Return whether this action must pass `--runtime` to `systemctl`.
+    pub fn uses_runtime_flag(self) -> bool {
+        matches!(self, Self::DisableRuntime)
     }
 }
 
@@ -481,6 +488,10 @@ mod tests {
         assert_eq!(UnitAction::Stop.prompt_verb(), "stopping");
         assert_eq!(UnitAction::Enable.past_tense(), "enabled");
         assert_eq!(UnitAction::Disable.past_tense(), "disabled");
+        assert_eq!(UnitAction::DisableRuntime.as_systemctl_arg(), "disable");
+        assert_eq!(UnitAction::DisableRuntime.prompt_verb(), "disabling");
+        assert!(UnitAction::DisableRuntime.uses_runtime_flag());
+        assert!(!UnitAction::Disable.uses_runtime_flag());
     }
 
     #[test]

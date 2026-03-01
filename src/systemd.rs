@@ -69,14 +69,18 @@ pub fn action_for_start_stop_states(active_state: &str, load_state: &str) -> Res
             validate_startable_load_state(load_state)?;
             Ok(UnitAction::Start)
         }
-        UnitAction::Restart | UnitAction::Enable | UnitAction::Disable => unreachable!(),
+        UnitAction::Restart
+        | UnitAction::Enable
+        | UnitAction::Disable
+        | UnitAction::DisableRuntime => unreachable!(),
     }
 }
 
 /// Choose the enable/disable action for a unit from its current `UnitFileState`.
 pub fn action_for_unit_file_state(unit_file_state: &str) -> Result<UnitAction> {
     match unit_file_state {
-        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" => Ok(UnitAction::Disable),
+        "enabled" | "linked" => Ok(UnitAction::Disable),
+        "enabled-runtime" | "linked-runtime" => Ok(UnitAction::DisableRuntime),
         "disabled" | "indirect" => Ok(UnitAction::Enable),
         other => Err(anyhow!(
             "unit file state '{other}' does not support enable/disable"
@@ -148,13 +152,17 @@ pub fn select_enable_disable_action(scope: Scope, unit: &str) -> Result<UnitActi
 }
 
 fn unit_action_args(scope: Scope, unit: &str, action: UnitAction) -> Vec<String> {
-    vec![
-        action.as_systemctl_arg().to_string(),
+    let mut args = vec![action.as_systemctl_arg().to_string()];
+    if action.uses_runtime_flag() {
+        args.push("--runtime".to_string());
+    }
+    args.extend([
         "--no-block".to_string(),
         "--no-ask-password".to_string(),
         scope.as_systemd_arg().to_string(),
         unit.to_string(),
-    ]
+    ]);
+    args
 }
 
 /// Queue one non-blocking start/stop/enable/disable action for a unit.
@@ -256,6 +264,8 @@ pub fn select_enable_disable_action(_scope: Scope, unit: &str) -> Result<UnitAct
     }
     if unit == "enabled.service" {
         Ok(UnitAction::Disable)
+    } else if unit == "enabled-runtime.service" {
+        Ok(UnitAction::DisableRuntime)
     } else if unit == "static.service" {
         Err(anyhow!(
             "unit file state 'static' does not support enable/disable"
@@ -404,8 +414,12 @@ mod tests {
             UnitAction::Disable
         );
         assert_eq!(
+            action_for_unit_file_state("enabled-runtime").expect("enabled-runtime action"),
+            UnitAction::DisableRuntime
+        );
+        assert_eq!(
             action_for_unit_file_state("linked-runtime").expect("linked-runtime action"),
-            UnitAction::Disable
+            UnitAction::DisableRuntime
         );
         assert_eq!(
             action_for_unit_file_state("disabled").expect("disabled action"),
@@ -437,6 +451,22 @@ mod tests {
                 "--no-block".to_string(),
                 "--no-ask-password".to_string(),
                 "--system".to_string(),
+                "demo.service".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn unit_action_args_add_runtime_flag_for_runtime_disable() {
+        let args = unit_action_args(Scope::User, "demo.service", UnitAction::DisableRuntime);
+        assert_eq!(
+            args,
+            vec![
+                "disable".to_string(),
+                "--runtime".to_string(),
+                "--no-block".to_string(),
+                "--no-ask-password".to_string(),
+                "--user".to_string(),
                 "demo.service".to_string(),
             ]
         );
@@ -533,6 +563,11 @@ mod tests {
             select_enable_disable_action(Scope::System, "enabled.service")
                 .expect("enable/disable action"),
             UnitAction::Disable
+        );
+        assert_eq!(
+            select_enable_disable_action(Scope::System, "enabled-runtime.service")
+                .expect("runtime enable/disable action"),
+            UnitAction::DisableRuntime
         );
         assert_eq!(
             select_enable_disable_action(Scope::System, "disabled.service")

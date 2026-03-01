@@ -99,18 +99,49 @@ fn set_status_line(
     *status_line_overrides_stale = overrides_stale;
 }
 
+fn cancel_pending_action_resolution<T>(
+    action_resolution_worker: &mut Option<T>,
+    status_line: &mut String,
+    status_line_overrides_stale: &mut bool,
+    rows_len: usize,
+) -> bool {
+    if action_resolution_worker.take().is_none() {
+        return false;
+    }
+    set_status_line(
+        status_line,
+        status_line_overrides_stale,
+        self::state::list_status_text(rows_len, None),
+        false,
+    );
+    true
+}
+
 fn apply_action_resolution_msg(
     confirmation: &mut Option<crate::types::ConfirmationState>,
     status_line: &mut String,
     status_line_overrides_stale: &mut bool,
     rows_len: usize,
+    view_mode: crate::types::ViewMode,
+    selected_unit: Option<&str>,
     msg: crate::types::WorkerMsg,
 ) -> bool {
     match msg {
         crate::types::WorkerMsg::ActionConfirmationReady {
-            unit: _,
+            unit,
             confirmation: resolved,
         } => {
+            if !matches!(view_mode, crate::types::ViewMode::List)
+                || selected_unit != Some(unit.as_str())
+            {
+                set_status_line(
+                    status_line,
+                    status_line_overrides_stale,
+                    self::state::list_status_text(rows_len, None),
+                    false,
+                );
+                return true;
+            }
             *confirmation = Some(resolved);
             set_status_line(
                 status_line,
@@ -121,6 +152,17 @@ fn apply_action_resolution_msg(
             true
         }
         crate::types::WorkerMsg::ActionResolutionError { unit, error } => {
+            if !matches!(view_mode, crate::types::ViewMode::List)
+                || selected_unit != Some(unit.as_str())
+            {
+                set_status_line(
+                    status_line,
+                    status_line_overrides_stale,
+                    self::state::list_status_text(rows_len, None),
+                    false,
+                );
+                return true;
+            }
             set_status_line(
                 status_line,
                 status_line_overrides_stale,
@@ -378,6 +420,8 @@ pub fn run() -> Result<()> {
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 rows.len(),
+                                view_mode,
+                                rows.get(selected_idx).map(|row| row.unit.as_str()),
                                 msg,
                             );
                             if clear_action_resolution_worker {
@@ -525,6 +569,14 @@ pub fn run() -> Result<()> {
                         UiCommand::MoveDown => match view_mode {
                             ViewMode::List => {
                                 if !rows.is_empty() {
+                                    if selected_idx < rows.len() - 1 {
+                                        cancel_pending_action_resolution(
+                                            &mut action_resolution_worker_rx,
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            rows.len(),
+                                        );
+                                    }
                                     selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
                                 }
                             }
@@ -536,11 +588,27 @@ pub fn run() -> Result<()> {
                             }
                         },
                         UiCommand::MoveUp => match view_mode {
-                            ViewMode::List => selected_idx = selected_idx.saturating_sub(1),
+                            ViewMode::List => {
+                                if selected_idx > 0 {
+                                    cancel_pending_action_resolution(
+                                        &mut action_resolution_worker_rx,
+                                        &mut status_line,
+                                        &mut status_line_overrides_stale,
+                                        rows.len(),
+                                    );
+                                }
+                                selected_idx = selected_idx.saturating_sub(1);
+                            }
                             ViewMode::Detail => detail.scroll = detail.scroll.saturating_sub(1),
                         },
                         UiCommand::OpenDetail => {
                             if let Some(row) = rows.get(selected_idx) {
+                                cancel_pending_action_resolution(
+                                    &mut action_resolution_worker_rx,
+                                    &mut status_line,
+                                    &mut status_line_overrides_stale,
+                                    rows.len(),
+                                );
                                 let request_id = detail.begin_for_unit(row.unit.clone());
                                 detail_worker_rx = Some(spawn_detail_worker(
                                     &config,
@@ -626,7 +694,10 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::input::UiCommand;
     use super::state::{list_status_text, stale_status_text};
-    use super::{apply_action_resolution_msg, apply_action_worker_msg, set_status_line};
+    use super::{
+        apply_action_resolution_msg, apply_action_worker_msg, cancel_pending_action_resolution,
+        set_status_line,
+    };
     use crate::rows::preserve_selection;
     use crate::types::{
         ConfirmationState, DetailState, LoadPhase, UnitAction, UnitRow, ViewMode, WorkerMsg,
@@ -640,7 +711,10 @@ mod tests {
         selected_idx: usize,
         detail: DetailState,
         detail_worker_active: bool,
+        action_resolution_active: Option<()>,
         refresh_requested: bool,
+        status_line: String,
+        status_line_overrides_stale: bool,
     }
 
     fn row(unit: &str) -> UnitRow {
@@ -672,6 +746,14 @@ mod tests {
             UiCommand::MoveDown => match state.view_mode {
                 ViewMode::List => {
                     if !state.rows.is_empty() {
+                        if state.selected_idx < state.rows.len() - 1 {
+                            cancel_pending_action_resolution(
+                                &mut state.action_resolution_active,
+                                &mut state.status_line,
+                                &mut state.status_line_overrides_stale,
+                                state.rows.len(),
+                            );
+                        }
                         state.selected_idx =
                             std::cmp::min(state.selected_idx + 1, state.rows.len() - 1);
                     }
@@ -684,11 +766,27 @@ mod tests {
                 }
             },
             UiCommand::MoveUp => match state.view_mode {
-                ViewMode::List => state.selected_idx = state.selected_idx.saturating_sub(1),
+                ViewMode::List => {
+                    if state.selected_idx > 0 {
+                        cancel_pending_action_resolution(
+                            &mut state.action_resolution_active,
+                            &mut state.status_line,
+                            &mut state.status_line_overrides_stale,
+                            state.rows.len(),
+                        );
+                    }
+                    state.selected_idx = state.selected_idx.saturating_sub(1);
+                }
                 ViewMode::Detail => state.detail.scroll = state.detail.scroll.saturating_sub(1),
             },
             UiCommand::OpenDetail => {
                 if let Some(r) = state.rows.get(state.selected_idx) {
+                    cancel_pending_action_resolution(
+                        &mut state.action_resolution_active,
+                        &mut state.status_line,
+                        &mut state.status_line_overrides_stale,
+                        state.rows.len(),
+                    );
                     let _ = state.detail.begin_for_unit(r.unit.clone());
                     state.detail_worker_active = true;
                     state.view_mode = ViewMode::Detail;
@@ -795,10 +893,16 @@ mod tests {
             selected_idx: 0,
             detail: DetailState::default(),
             detail_worker_active: false,
+            action_resolution_active: Some(()),
             refresh_requested: false,
+            status_line: "resolving action for a.service".to_string(),
+            status_line_overrides_stale: true,
         };
         assert!(!apply_command(&mut state, UiCommand::MoveDown));
         assert_eq!(state.selected_idx, 1);
+        assert!(state.action_resolution_active.is_none());
+        assert_eq!(state.status_line, list_status_text(2, None));
+        assert!(!state.status_line_overrides_stale);
         assert!(!apply_command(&mut state, UiCommand::OpenDetail));
         assert!(matches!(state.view_mode, ViewMode::Detail));
         state.detail_worker_active = false;
@@ -878,6 +982,8 @@ mod tests {
             &mut status_line,
             &mut override_stale,
             2,
+            ViewMode::List,
+            Some("demo.service"),
             WorkerMsg::ActionConfirmationReady {
                 unit: "demo.service".to_string(),
                 confirmation: ConfirmationState::restart_or_stop("demo.service".to_string()),
@@ -897,6 +1003,8 @@ mod tests {
             &mut status_line,
             &mut override_stale,
             2,
+            ViewMode::List,
+            Some("demo.service"),
             WorkerMsg::ActionResolutionError {
                 unit: "demo.service".to_string(),
                 error: "boom".to_string(),
@@ -904,6 +1012,46 @@ mod tests {
         ));
         assert!(status_line.contains("failed to inspect demo.service: boom"));
         assert!(override_stale);
+    }
+
+    #[test]
+    fn apply_action_resolution_msg_ignores_stale_selection_and_view() {
+        let mut confirmation = None;
+        let mut status_line = "resolving".to_string();
+        let mut override_stale = true;
+
+        assert!(apply_action_resolution_msg(
+            &mut confirmation,
+            &mut status_line,
+            &mut override_stale,
+            2,
+            ViewMode::List,
+            Some("other.service"),
+            WorkerMsg::ActionConfirmationReady {
+                unit: "demo.service".to_string(),
+                confirmation: ConfirmationState::restart_or_stop("demo.service".to_string()),
+            },
+        ));
+        assert!(confirmation.is_none());
+        assert_eq!(status_line, list_status_text(2, None));
+        assert!(!override_stale);
+
+        status_line = "resolving".to_string();
+        override_stale = true;
+        assert!(apply_action_resolution_msg(
+            &mut confirmation,
+            &mut status_line,
+            &mut override_stale,
+            2,
+            ViewMode::Detail,
+            Some("demo.service"),
+            WorkerMsg::ActionResolutionError {
+                unit: "demo.service".to_string(),
+                error: "boom".to_string(),
+            },
+        ));
+        assert_eq!(status_line, list_status_text(2, None));
+        assert!(!override_stale);
     }
 
     #[test]
@@ -917,11 +1065,46 @@ mod tests {
             &mut status_line,
             &mut override_stale,
             2,
+            ViewMode::List,
+            Some("demo.service"),
             WorkerMsg::Finished,
         ));
         assert!(confirmation.is_none());
         assert_eq!(status_line, "unchanged");
         assert!(!override_stale);
+    }
+
+    #[test]
+    fn cancel_pending_action_resolution_resets_status_when_active() {
+        let mut worker = Some(());
+        let mut status_line = "resolving".to_string();
+        let mut override_stale = true;
+
+        assert!(cancel_pending_action_resolution(
+            &mut worker,
+            &mut status_line,
+            &mut override_stale,
+            3,
+        ));
+        assert!(worker.is_none());
+        assert_eq!(status_line, list_status_text(3, None));
+        assert!(!override_stale);
+    }
+
+    #[test]
+    fn cancel_pending_action_resolution_is_noop_without_pending_worker() {
+        let mut worker = None::<()>;
+        let mut status_line = "unchanged".to_string();
+        let mut override_stale = true;
+
+        assert!(!cancel_pending_action_resolution(
+            &mut worker,
+            &mut status_line,
+            &mut override_stale,
+            3,
+        ));
+        assert_eq!(status_line, "unchanged");
+        assert!(override_stale);
     }
 
     #[test]

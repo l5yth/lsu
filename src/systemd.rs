@@ -84,6 +84,28 @@ pub fn action_for_unit_file_state(unit_file_state: &str) -> Result<UnitAction> {
     }
 }
 
+fn parse_start_stop_properties(output: &str) -> Result<(String, String)> {
+    let mut active_state = None;
+    let mut load_state = None;
+
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "ActiveState" => active_state = Some(value.trim().to_string()),
+            "LoadState" => load_state = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+
+    let active_state =
+        active_state.ok_or_else(|| anyhow!("systemctl show output missing ActiveState"))?;
+    let load_state =
+        load_state.ok_or_else(|| anyhow!("systemctl show output missing LoadState"))?;
+    Ok((active_state, load_state))
+}
+
 #[cfg(not(test))]
 fn fetch_unit_property(scope: Scope, unit: &str, property: &str) -> Result<String> {
     let systemctl = resolve_trusted_binary("systemctl")?;
@@ -99,11 +121,22 @@ fn fetch_unit_property(scope: Scope, unit: &str, property: &str) -> Result<Strin
     Ok(output.trim().to_string())
 }
 
+#[cfg(not(test))]
+fn fetch_start_stop_states(scope: Scope, unit: &str) -> Result<(String, String)> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    cmd.arg("show")
+        .arg(scope.as_systemd_arg())
+        .arg("--property=ActiveState,LoadState")
+        .arg(unit);
+    let output = cmd_stdout(&mut cmd).context("systemctl show ActiveState,LoadState failed")?;
+    parse_start_stop_properties(&output)
+}
+
 /// Determine whether a start or stop action should be offered for a unit.
 #[cfg(not(test))]
 pub fn select_start_stop_action(scope: Scope, unit: &str) -> Result<UnitAction> {
-    let active_state = fetch_unit_property(scope, unit, "ActiveState")?;
-    let load_state = fetch_unit_property(scope, unit, "LoadState")?;
+    let (active_state, load_state) = fetch_start_stop_states(scope, unit)?;
     action_for_start_stop_states(&active_state, &load_state)
 }
 
@@ -346,6 +379,22 @@ mod tests {
                 .expect("refreshing units should use stop workflow"),
             UnitAction::Stop
         );
+    }
+
+    #[test]
+    fn parse_start_stop_properties_extracts_matching_snapshot_values() {
+        let output = "LoadState=loaded\nActiveState=refreshing\nSubState=reload\n";
+        assert_eq!(
+            parse_start_stop_properties(output).expect("properties should parse"),
+            ("refreshing".to_string(), "loaded".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_start_stop_properties_rejects_missing_fields() {
+        let err =
+            parse_start_stop_properties("ActiveState=active\n").expect_err("load state is missing");
+        assert_eq!(err.to_string(), "systemctl show output missing LoadState");
     }
 
     #[test]

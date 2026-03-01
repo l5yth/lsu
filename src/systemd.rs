@@ -77,7 +77,7 @@ pub fn action_for_start_stop_states(active_state: &str, load_state: &str) -> Res
 pub fn action_for_unit_file_state(unit_file_state: &str) -> Result<UnitAction> {
     match unit_file_state {
         "enabled" | "enabled-runtime" | "linked" | "linked-runtime" => Ok(UnitAction::Disable),
-        "disabled" => Ok(UnitAction::Enable),
+        "disabled" | "indirect" => Ok(UnitAction::Enable),
         other => Err(anyhow!(
             "unit file state '{other}' does not support enable/disable"
         )),
@@ -411,18 +411,15 @@ mod tests {
             action_for_unit_file_state("disabled").expect("disabled action"),
             UnitAction::Enable
         );
+        assert_eq!(
+            action_for_unit_file_state("indirect").expect("indirect action"),
+            UnitAction::Enable
+        );
     }
 
     #[test]
     fn action_for_unit_file_state_rejects_unsupported_states() {
-        for state in [
-            "static",
-            "masked",
-            "generated",
-            "transient",
-            "indirect",
-            "alias",
-        ] {
+        for state in ["static", "masked", "generated", "transient", "alias"] {
             let err = action_for_unit_file_state(state).expect_err("unsupported state");
             assert!(err.to_string().contains(&format!(
                 "unit file state '{state}' does not support enable/disable"

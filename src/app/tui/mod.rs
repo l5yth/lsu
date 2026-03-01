@@ -99,26 +99,61 @@ fn set_status_line(
     *status_line_overrides_stale = overrides_stale;
 }
 
-fn cancel_pending_action_resolution<T>(
-    action_resolution_worker: &mut Option<T>,
+fn set_list_status_line(
+    list_status_line: &mut String,
+    list_status_line_overrides_stale: &mut bool,
     status_line: &mut String,
     status_line_overrides_stale: &mut bool,
-    rows_len: usize,
+    text: String,
+    overrides_stale: bool,
+) {
+    *list_status_line = text.clone();
+    *list_status_line_overrides_stale = overrides_stale;
+    set_status_line(
+        status_line,
+        status_line_overrides_stale,
+        text,
+        overrides_stale,
+    );
+}
+
+fn restore_list_status_line(
+    list_status_line: &str,
+    list_status_line_overrides_stale: bool,
+    status_line: &mut String,
+    status_line_overrides_stale: &mut bool,
+) {
+    set_status_line(
+        status_line,
+        status_line_overrides_stale,
+        list_status_line.to_string(),
+        list_status_line_overrides_stale,
+    );
+}
+
+fn cancel_pending_action_resolution<T>(
+    action_resolution_worker: &mut Option<T>,
+    list_status_line: &str,
+    list_status_line_overrides_stale: bool,
+    status_line: &mut String,
+    status_line_overrides_stale: &mut bool,
 ) -> bool {
     if action_resolution_worker.take().is_none() {
         return false;
     }
-    set_status_line(
+    restore_list_status_line(
+        list_status_line,
+        list_status_line_overrides_stale,
         status_line,
         status_line_overrides_stale,
-        self::state::list_status_text(rows_len, None),
-        false,
     );
     true
 }
 
 fn apply_action_resolution_msg(
     confirmation: &mut Option<crate::types::ConfirmationState>,
+    list_status_line: &str,
+    list_status_line_overrides_stale: bool,
     status_line: &mut String,
     status_line_overrides_stale: &mut bool,
     rows_len: usize,
@@ -134,20 +169,20 @@ fn apply_action_resolution_msg(
             if !matches!(view_mode, crate::types::ViewMode::List)
                 || selected_unit != Some(unit.as_str())
             {
-                set_status_line(
+                restore_list_status_line(
+                    list_status_line,
+                    list_status_line_overrides_stale,
                     status_line,
                     status_line_overrides_stale,
-                    self::state::list_status_text(rows_len, None),
-                    false,
                 );
                 return true;
             }
             *confirmation = Some(resolved);
-            set_status_line(
+            restore_list_status_line(
+                list_status_line,
+                list_status_line_overrides_stale,
                 status_line,
                 status_line_overrides_stale,
-                self::state::list_status_text(rows_len, None),
-                false,
             );
             true
         }
@@ -155,11 +190,11 @@ fn apply_action_resolution_msg(
             if !matches!(view_mode, crate::types::ViewMode::List)
                 || selected_unit != Some(unit.as_str())
             {
-                set_status_line(
+                restore_list_status_line(
+                    list_status_line,
+                    list_status_line_overrides_stale,
                     status_line,
                     status_line_overrides_stale,
-                    self::state::list_status_text(rows_len, None),
-                    false,
                 );
                 return true;
             }
@@ -244,6 +279,8 @@ pub fn run() -> Result<()> {
     let mut confirmation: Option<ConfirmationState> = None;
     let mut status_line_overrides_stale = false;
     let mut status_line = list_status_text(0, None);
+    let mut list_status_line = status_line.clone();
+    let mut list_status_line_overrides_stale = false;
 
     let res = (|| -> Result<()> {
         loop {
@@ -270,7 +307,9 @@ pub fn run() -> Result<()> {
 
             if refresh_requested && matches!(phase, LoadPhase::Idle) && worker_rx.is_none() {
                 phase = LoadPhase::FetchingUnits;
-                set_status_line(
+                set_list_status_line(
+                    &mut list_status_line,
+                    &mut list_status_line_overrides_stale,
                     &mut status_line,
                     &mut status_line_overrides_stale,
                     loading_units_status_text(),
@@ -297,7 +336,9 @@ pub fn run() -> Result<()> {
                                 .collect();
                             preserve_selection(previous_selected, &rows, &mut selected_idx);
                             if rows.is_empty() {
-                                set_status_line(
+                                set_list_status_line(
+                                    &mut list_status_line,
+                                    &mut list_status_line_overrides_stale,
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
                                     list_status_text(0, None),
@@ -305,7 +346,9 @@ pub fn run() -> Result<()> {
                                 );
                                 phase = LoadPhase::Idle;
                             } else {
-                                set_status_line(
+                                set_list_status_line(
+                                    &mut list_status_line,
+                                    &mut list_status_line_overrides_stale,
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
                                     list_status_text(rows.len(), Some((0, rows.len()))),
@@ -322,7 +365,9 @@ pub fn run() -> Result<()> {
                                     row.last_log = log;
                                 }
                             }
-                            set_status_line(
+                            set_list_status_line(
+                                &mut list_status_line,
+                                &mut list_status_line_overrides_stale,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 list_status_text(rows.len(), Some((done, total))),
@@ -332,7 +377,9 @@ pub fn run() -> Result<()> {
                         }
                         Ok(WorkerMsg::Finished) => {
                             phase = LoadPhase::Idle;
-                            set_status_line(
+                            set_list_status_line(
+                                &mut list_status_line,
+                                &mut list_status_line_overrides_stale,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 list_status_text(rows.len(), None),
@@ -344,7 +391,9 @@ pub fn run() -> Result<()> {
                         Ok(WorkerMsg::Error(e)) => {
                             last_load_error = true;
                             last_load_error_message = Some(e);
-                            set_status_line(
+                            set_list_status_line(
+                                &mut list_status_line,
+                                &mut list_status_line_overrides_stale,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 stale_status_text(rows.len()),
@@ -417,6 +466,8 @@ pub fn run() -> Result<()> {
                         Ok(msg) => {
                             clear_action_resolution_worker = apply_action_resolution_msg(
                                 &mut confirmation,
+                                &list_status_line,
+                                list_status_line_overrides_stale,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
                                 rows.len(),
@@ -538,11 +589,11 @@ pub fn run() -> Result<()> {
                         }
                         UiCommand::Cancel => {
                             confirmation = None;
-                            set_status_line(
+                            restore_list_status_line(
+                                &list_status_line,
+                                list_status_line_overrides_stale,
                                 &mut status_line,
                                 &mut status_line_overrides_stale,
-                                list_status_text(rows.len(), None),
-                                false,
                             );
                         }
                         _ => {}
@@ -572,9 +623,10 @@ pub fn run() -> Result<()> {
                                     if selected_idx < rows.len() - 1 {
                                         cancel_pending_action_resolution(
                                             &mut action_resolution_worker_rx,
+                                            &list_status_line,
+                                            list_status_line_overrides_stale,
                                             &mut status_line,
                                             &mut status_line_overrides_stale,
-                                            rows.len(),
                                         );
                                     }
                                     selected_idx = std::cmp::min(selected_idx + 1, rows.len() - 1);
@@ -592,9 +644,10 @@ pub fn run() -> Result<()> {
                                 if selected_idx > 0 {
                                     cancel_pending_action_resolution(
                                         &mut action_resolution_worker_rx,
+                                        &list_status_line,
+                                        list_status_line_overrides_stale,
                                         &mut status_line,
                                         &mut status_line_overrides_stale,
-                                        rows.len(),
                                     );
                                 }
                                 selected_idx = selected_idx.saturating_sub(1);
@@ -605,9 +658,10 @@ pub fn run() -> Result<()> {
                             if let Some(row) = rows.get(selected_idx) {
                                 cancel_pending_action_resolution(
                                     &mut action_resolution_worker_rx,
+                                    &list_status_line,
+                                    list_status_line_overrides_stale,
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
-                                    rows.len(),
                                 );
                                 let request_id = detail.begin_for_unit(row.unit.clone());
                                 detail_worker_rx = Some(spawn_detail_worker(
@@ -696,7 +750,7 @@ mod tests {
     use super::state::{list_status_text, stale_status_text};
     use super::{
         apply_action_resolution_msg, apply_action_worker_msg, cancel_pending_action_resolution,
-        set_status_line,
+        restore_list_status_line, set_list_status_line, set_status_line,
     };
     use crate::rows::preserve_selection;
     use crate::types::{
@@ -713,6 +767,8 @@ mod tests {
         detail_worker_active: bool,
         action_resolution_active: Option<()>,
         refresh_requested: bool,
+        list_status_line: String,
+        list_status_line_overrides_stale: bool,
         status_line: String,
         status_line_overrides_stale: bool,
     }
@@ -749,9 +805,10 @@ mod tests {
                         if state.selected_idx < state.rows.len() - 1 {
                             cancel_pending_action_resolution(
                                 &mut state.action_resolution_active,
+                                &state.list_status_line,
+                                state.list_status_line_overrides_stale,
                                 &mut state.status_line,
                                 &mut state.status_line_overrides_stale,
-                                state.rows.len(),
                             );
                         }
                         state.selected_idx =
@@ -770,9 +827,10 @@ mod tests {
                     if state.selected_idx > 0 {
                         cancel_pending_action_resolution(
                             &mut state.action_resolution_active,
+                            &state.list_status_line,
+                            state.list_status_line_overrides_stale,
                             &mut state.status_line,
                             &mut state.status_line_overrides_stale,
-                            state.rows.len(),
                         );
                     }
                     state.selected_idx = state.selected_idx.saturating_sub(1);
@@ -783,9 +841,10 @@ mod tests {
                 if let Some(r) = state.rows.get(state.selected_idx) {
                     cancel_pending_action_resolution(
                         &mut state.action_resolution_active,
+                        &state.list_status_line,
+                        state.list_status_line_overrides_stale,
                         &mut state.status_line,
                         &mut state.status_line_overrides_stale,
-                        state.rows.len(),
                     );
                     let _ = state.detail.begin_for_unit(r.unit.clone());
                     state.detail_worker_active = true;
@@ -895,13 +954,15 @@ mod tests {
             detail_worker_active: false,
             action_resolution_active: Some(()),
             refresh_requested: false,
+            list_status_line: "services: 2 | logs: 1/2 | controls".to_string(),
+            list_status_line_overrides_stale: false,
             status_line: "resolving action for a.service".to_string(),
             status_line_overrides_stale: true,
         };
         assert!(!apply_command(&mut state, UiCommand::MoveDown));
         assert_eq!(state.selected_idx, 1);
         assert!(state.action_resolution_active.is_none());
-        assert_eq!(state.status_line, list_status_text(2, None));
+        assert_eq!(state.status_line, "services: 2 | logs: 1/2 | controls");
         assert!(!state.status_line_overrides_stale);
         assert!(!apply_command(&mut state, UiCommand::OpenDetail));
         assert!(matches!(state.view_mode, ViewMode::Detail));
@@ -972,13 +1033,47 @@ mod tests {
     }
 
     #[test]
+    fn set_and_restore_list_status_line_track_snapshot_and_restore_progress() {
+        let mut list_line = String::new();
+        let mut list_override = false;
+        let mut line = String::new();
+        let mut override_stale = false;
+
+        set_list_status_line(
+            &mut list_line,
+            &mut list_override,
+            &mut line,
+            &mut override_stale,
+            "services: 2 | logs: 1/2".to_string(),
+            false,
+        );
+        assert_eq!(list_line, "services: 2 | logs: 1/2");
+        assert!(!list_override);
+        assert_eq!(line, "services: 2 | logs: 1/2");
+        assert!(!override_stale);
+
+        set_status_line(
+            &mut line,
+            &mut override_stale,
+            "resolving".to_string(),
+            true,
+        );
+        restore_list_status_line(&list_line, list_override, &mut line, &mut override_stale);
+        assert_eq!(line, "services: 2 | logs: 1/2");
+        assert!(!override_stale);
+    }
+
+    #[test]
     fn apply_action_resolution_msg_updates_confirmation_and_error_status() {
         let mut confirmation = None;
+        let list_status_line = "services: 2 | logs: 1/2".to_string();
         let mut status_line = String::new();
         let mut override_stale = false;
 
         assert!(apply_action_resolution_msg(
             &mut confirmation,
+            &list_status_line,
+            false,
             &mut status_line,
             &mut override_stale,
             2,
@@ -995,11 +1090,13 @@ mod tests {
                 "demo.service".to_string()
             ))
         );
-        assert_eq!(status_line, list_status_text(2, None));
+        assert_eq!(status_line, list_status_line);
         assert!(!override_stale);
 
         assert!(apply_action_resolution_msg(
             &mut confirmation,
+            &list_status_line,
+            false,
             &mut status_line,
             &mut override_stale,
             2,
@@ -1017,11 +1114,14 @@ mod tests {
     #[test]
     fn apply_action_resolution_msg_ignores_stale_selection_and_view() {
         let mut confirmation = None;
+        let list_status_line = "services: 2 | logs: 1/2".to_string();
         let mut status_line = "resolving".to_string();
         let mut override_stale = true;
 
         assert!(apply_action_resolution_msg(
             &mut confirmation,
+            &list_status_line,
+            false,
             &mut status_line,
             &mut override_stale,
             2,
@@ -1033,13 +1133,15 @@ mod tests {
             },
         ));
         assert!(confirmation.is_none());
-        assert_eq!(status_line, list_status_text(2, None));
+        assert_eq!(status_line, list_status_line);
         assert!(!override_stale);
 
         status_line = "resolving".to_string();
         override_stale = true;
         assert!(apply_action_resolution_msg(
             &mut confirmation,
+            &list_status_line,
+            false,
             &mut status_line,
             &mut override_stale,
             2,
@@ -1050,8 +1152,36 @@ mod tests {
                 error: "boom".to_string(),
             },
         ));
-        assert_eq!(status_line, list_status_text(2, None));
+        assert_eq!(status_line, list_status_line);
         assert!(!override_stale);
+    }
+
+    #[test]
+    fn apply_action_resolution_msg_restores_stale_list_status_when_needed() {
+        let mut confirmation = None;
+        let list_status_line = stale_status_text(2);
+        let mut status_line = "resolving".to_string();
+        let mut override_stale = true;
+
+        assert!(apply_action_resolution_msg(
+            &mut confirmation,
+            &list_status_line,
+            true,
+            &mut status_line,
+            &mut override_stale,
+            2,
+            ViewMode::List,
+            Some("demo.service"),
+            WorkerMsg::ActionConfirmationReady {
+                unit: "demo.service".to_string(),
+                confirmation: ConfirmationState::confirm_action(
+                    UnitAction::Start,
+                    "demo.service".to_string(),
+                ),
+            },
+        ));
+        assert_eq!(status_line, list_status_line);
+        assert!(override_stale);
     }
 
     #[test]
@@ -1062,6 +1192,8 @@ mod tests {
 
         assert!(!apply_action_resolution_msg(
             &mut confirmation,
+            "services: 2",
+            false,
             &mut status_line,
             &mut override_stale,
             2,
@@ -1077,17 +1209,19 @@ mod tests {
     #[test]
     fn cancel_pending_action_resolution_resets_status_when_active() {
         let mut worker = Some(());
+        let list_status_line = "services: 3 | logs: 2/3".to_string();
         let mut status_line = "resolving".to_string();
         let mut override_stale = true;
 
         assert!(cancel_pending_action_resolution(
             &mut worker,
+            &list_status_line,
+            false,
             &mut status_line,
             &mut override_stale,
-            3,
         ));
         assert!(worker.is_none());
-        assert_eq!(status_line, list_status_text(3, None));
+        assert_eq!(status_line, list_status_line);
         assert!(!override_stale);
     }
 
@@ -1099,12 +1233,57 @@ mod tests {
 
         assert!(!cancel_pending_action_resolution(
             &mut worker,
+            "services: 3",
+            false,
             &mut status_line,
             &mut override_stale,
-            3,
         ));
         assert_eq!(status_line, "unchanged");
         assert!(override_stale);
+    }
+
+    #[test]
+    fn apply_command_covers_remaining_navigation_branches() {
+        let mut state = TestUiState {
+            view_mode: ViewMode::List,
+            rows: vec![row("a.service")],
+            selected_idx: 0,
+            detail: DetailState::default(),
+            detail_worker_active: false,
+            action_resolution_active: Some(()),
+            refresh_requested: false,
+            list_status_line: "services: 1 | logs: 1/1".to_string(),
+            list_status_line_overrides_stale: false,
+            status_line: "resolving".to_string(),
+            status_line_overrides_stale: true,
+        };
+
+        assert!(!apply_command(&mut state, UiCommand::MoveUp));
+        assert_eq!(state.selected_idx, 0);
+        assert!(state.action_resolution_active.is_some());
+        assert_eq!(state.status_line, "resolving");
+
+        assert!(!apply_command(&mut state, UiCommand::MoveDown));
+        assert_eq!(state.selected_idx, 0);
+        assert!(state.action_resolution_active.is_some());
+
+        state.view_mode = ViewMode::Detail;
+        state.detail.logs = vec![
+            crate::types::DetailLogEntry {
+                time: "t1".to_string(),
+                log: "a".to_string(),
+            },
+            crate::types::DetailLogEntry {
+                time: "t2".to_string(),
+                log: "b".to_string(),
+            },
+        ];
+        assert!(!apply_command(&mut state, UiCommand::MoveDown));
+        assert_eq!(state.detail.scroll, 1);
+        assert!(!apply_command(&mut state, UiCommand::MoveUp));
+        assert_eq!(state.detail.scroll, 0);
+        assert!(!apply_command(&mut state, UiCommand::BackToList));
+        assert!(matches!(state.view_mode, ViewMode::List));
     }
 
     #[test]

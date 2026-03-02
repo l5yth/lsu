@@ -444,6 +444,8 @@ mod tests {
                 )
             })
             .expect("draw");
+        let text = rendered_text(&terminal);
+        assert!(text.contains("confirm enabling of unit a.service (y/n)"));
     }
 
     #[test]

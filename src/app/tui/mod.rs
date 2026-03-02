@@ -730,6 +730,10 @@ pub fn run() -> Result<()> {
                                 view_mode = ViewMode::Detail;
                             }
                         }
+                        // No need to cancel a pending resolution here: resolution
+                        // can only be started from List view, and OpenDetail already
+                        // cancels it, so no resolution worker is running when the
+                        // user presses BackToList from Detail view.
                         UiCommand::BackToList => view_mode = ViewMode::List,
                         UiCommand::RefreshDetail => {
                             if detail_worker_rx.is_none()

@@ -61,11 +61,14 @@ pub fn loading_units_status_text() -> String {
 }
 
 /// Build the footer status text shown while a unit action is running.
+///
+/// `confirmation` must have kind `ConfirmAction`; calling this with a
+/// `RestartOrStop` confirmation is a programming error and will panic.
 pub fn action_status_text(rows: usize, confirmation: &ConfirmationState) -> String {
     let verb = confirmation
         .confirmed_action()
-        .map(|action| action.prompt_verb())
-        .unwrap_or("running action for");
+        .expect("action_status_text requires a ConfirmAction confirmation")
+        .prompt_verb();
     format!("{MODE_LABEL}: {rows} | {} {}...", verb, confirmation.unit)
 }
 

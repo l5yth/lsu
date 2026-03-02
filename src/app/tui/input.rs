@@ -18,7 +18,7 @@
 
 use crossterm::event::KeyCode;
 
-use crate::types::ViewMode;
+use crate::types::{ConfirmationKind, ViewMode};
 
 /// High-level UI command mapped from a key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,12 @@ pub enum UiCommand {
     OpenDetail,
     BackToList,
     RefreshDetail,
+    RequestStartStop,
+    RequestEnableDisable,
+    Confirm,
+    Cancel,
+    ChooseRestart,
+    ChooseStop,
 }
 
 /// Translate a key in the current view mode to a UI command.
@@ -41,6 +47,8 @@ pub fn map_key(view_mode: ViewMode, key: KeyCode) -> Option<UiCommand> {
             KeyCode::Down => Some(UiCommand::MoveDown),
             KeyCode::Up => Some(UiCommand::MoveUp),
             KeyCode::Char('l') | KeyCode::Enter => Some(UiCommand::OpenDetail),
+            KeyCode::Char('s') => Some(UiCommand::RequestStartStop),
+            KeyCode::Char('e') => Some(UiCommand::RequestEnableDisable),
             _ => None,
         },
         ViewMode::Detail => match key {
@@ -50,6 +58,23 @@ pub fn map_key(view_mode: ViewMode, key: KeyCode) -> Option<UiCommand> {
             KeyCode::Up => Some(UiCommand::MoveUp),
             KeyCode::Esc | KeyCode::Char('b') => Some(UiCommand::BackToList),
             KeyCode::Char('l') => Some(UiCommand::RefreshDetail),
+            _ => None,
+        },
+    }
+}
+
+/// Translate a key while a confirmation prompt is active.
+pub fn map_confirmation_key(kind: ConfirmationKind, key: KeyCode) -> Option<UiCommand> {
+    match kind {
+        ConfirmationKind::ConfirmAction(_) => match key {
+            KeyCode::Char('y') | KeyCode::Enter => Some(UiCommand::Confirm),
+            KeyCode::Char('n') | KeyCode::Esc => Some(UiCommand::Cancel),
+            _ => None,
+        },
+        ConfirmationKind::RestartOrStop => match key {
+            KeyCode::Char('r') => Some(UiCommand::ChooseRestart),
+            KeyCode::Char('s') => Some(UiCommand::ChooseStop),
+            KeyCode::Esc => Some(UiCommand::Cancel),
             _ => None,
         },
     }
@@ -76,6 +101,14 @@ mod tests {
         assert_eq!(
             map_key(ViewMode::List, KeyCode::Up),
             Some(UiCommand::MoveUp)
+        );
+        assert_eq!(
+            map_key(ViewMode::List, KeyCode::Char('s')),
+            Some(UiCommand::RequestStartStop)
+        );
+        assert_eq!(
+            map_key(ViewMode::List, KeyCode::Char('e')),
+            Some(UiCommand::RequestEnableDisable)
         );
     }
 
@@ -110,5 +143,65 @@ mod tests {
             Some(UiCommand::Refresh)
         );
         assert_eq!(map_key(ViewMode::Detail, KeyCode::Enter), None);
+        assert_eq!(map_key(ViewMode::Detail, KeyCode::Char('s')), None);
+    }
+
+    #[test]
+    fn map_confirmation_key_maps_accept_and_decline() {
+        assert_eq!(
+            map_confirmation_key(
+                ConfirmationKind::ConfirmAction(crate::types::UnitAction::Start),
+                KeyCode::Char('y')
+            ),
+            Some(UiCommand::Confirm)
+        );
+        assert_eq!(
+            map_confirmation_key(
+                ConfirmationKind::ConfirmAction(crate::types::UnitAction::Start),
+                KeyCode::Enter
+            ),
+            Some(UiCommand::Confirm)
+        );
+        assert_eq!(
+            map_confirmation_key(
+                ConfirmationKind::ConfirmAction(crate::types::UnitAction::Start),
+                KeyCode::Char('n')
+            ),
+            Some(UiCommand::Cancel)
+        );
+        assert_eq!(
+            map_confirmation_key(
+                ConfirmationKind::ConfirmAction(crate::types::UnitAction::Start),
+                KeyCode::Esc
+            ),
+            Some(UiCommand::Cancel)
+        );
+        assert_eq!(
+            map_confirmation_key(
+                ConfirmationKind::ConfirmAction(crate::types::UnitAction::Start),
+                KeyCode::Char('x')
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn map_confirmation_key_maps_restart_or_stop_prompt() {
+        assert_eq!(
+            map_confirmation_key(ConfirmationKind::RestartOrStop, KeyCode::Char('r')),
+            Some(UiCommand::ChooseRestart)
+        );
+        assert_eq!(
+            map_confirmation_key(ConfirmationKind::RestartOrStop, KeyCode::Char('s')),
+            Some(UiCommand::ChooseStop)
+        );
+        assert_eq!(
+            map_confirmation_key(ConfirmationKind::RestartOrStop, KeyCode::Esc),
+            Some(UiCommand::Cancel)
+        );
+        assert_eq!(
+            map_confirmation_key(ConfirmationKind::RestartOrStop, KeyCode::Enter),
+            None
+        );
     }
 }

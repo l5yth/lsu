@@ -19,7 +19,7 @@
 use anyhow::{Result, anyhow};
 use std::str::FromStr;
 
-use crate::types::Scope;
+use crate::types::{Scope, SortMode};
 
 /// Parsed command-line configuration.
 #[derive(Debug, Clone)]
@@ -38,6 +38,8 @@ pub struct Config {
     pub debug_tui: bool,
     /// Target systemd scope (`system` or `user`).
     pub scope: Scope,
+    /// Row sort order for the list view.
+    pub sort_mode: SortMode,
 }
 
 #[cfg(feature = "debug_tui")]
@@ -50,6 +52,7 @@ fn debug_tui_config() -> Config {
         show_version: false,
         debug_tui: true,
         scope: Scope::System,
+        sort_mode: SortMode::Status,
     }
 }
 
@@ -263,6 +266,35 @@ impl FromStr for SubFilter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortArg {
+    Auto,
+    Name,
+    Status,
+}
+
+impl SortArg {
+    fn allowed_values() -> &'static str {
+        "auto, name, status"
+    }
+}
+
+impl FromStr for SortArg {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "auto" => Ok(Self::Auto),
+            "name" => Ok(Self::Name),
+            "status" => Ok(Self::Status),
+            _ => Err(anyhow!(
+                "invalid --sort value: {s}; allowed: {}",
+                Self::allowed_values()
+            )),
+        }
+    }
+}
+
 /// Human-readable CLI usage text.
 pub fn usage() -> &'static str {
     concat!(
@@ -289,6 +321,8 @@ Options:
                        reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog,
                        stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill,
                        final-watchdog, cleaning)
+      --sort <value>   Sort order for the list view (auto, name, status)
+                       auto (default): status when all filters are 'all', name otherwise
   -i, --installed      Include unit-file-only services not loaded by systemd
   -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
@@ -322,6 +356,7 @@ where
     let mut saw_all = false;
     let mut saw_specific_filter = false;
     let mut scope = Scope::System;
+    let mut sort_arg: Option<SortArg> = None;
 
     let mut it = args.into_iter();
     let _program = it.next();
@@ -356,6 +391,12 @@ where
                 sub_filter = Some(value.parse()?);
                 saw_specific_filter = true;
             }
+            "--sort" => {
+                let value = it
+                    .next()
+                    .ok_or_else(|| anyhow!("missing value for {arg}\n\n{}", usage()))?;
+                sort_arg = Some(value.parse()?);
+            }
             "-u" | "--user" => {
                 scope = Scope::User;
             }
@@ -369,6 +410,8 @@ where
                 } else if let Some(value) = arg.strip_prefix("--sub=") {
                     sub_filter = Some(value.parse()?);
                     saw_specific_filter = true;
+                } else if let Some(value) = arg.strip_prefix("--sort=") {
+                    sort_arg = Some(value.parse()?);
                 } else {
                     return Err(anyhow!("unknown argument: {arg}\n\n{}", usage()));
                 }
@@ -395,6 +438,18 @@ where
         (LoadFilter::Loaded, ActiveFilter::Active, SubFilter::Running)
     };
 
+    let sort_mode = match sort_arg.unwrap_or(SortArg::Auto) {
+        SortArg::Name => SortMode::Name,
+        SortArg::Status => SortMode::Status,
+        SortArg::Auto => {
+            if load == LoadFilter::All && active == ActiveFilter::All && sub == SubFilter::All {
+                SortMode::Status
+            } else {
+                SortMode::Name
+            }
+        }
+    };
+
     Ok(Config {
         load_filter: load.as_str().to_string(),
         active_filter: active.as_str().to_string(),
@@ -403,6 +458,7 @@ where
         show_version,
         debug_tui: false,
         scope,
+        sort_mode,
     })
 }
 
@@ -419,6 +475,7 @@ mod tests {
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
         assert!(!cfg.debug_tui);
+        assert_eq!(cfg.sort_mode, SortMode::Name);
     }
 
     #[test]
@@ -430,6 +487,7 @@ mod tests {
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
         assert!(!cfg.debug_tui);
+        assert_eq!(cfg.sort_mode, SortMode::Status);
     }
 
     #[test]
@@ -698,6 +756,7 @@ mod tests {
         assert!(!cfg.show_help);
         assert!(!cfg.show_version);
         assert!(matches!(cfg.scope, Scope::System));
+        assert_eq!(cfg.sort_mode, SortMode::Status);
     }
 
     #[cfg(feature = "debug_tui")]
@@ -710,6 +769,79 @@ mod tests {
         let err = parse_args(vec!["lsu", "--active=--debug-tui"])
             .expect_err("debug flag should not be treated as an --active value");
         assert!(err.to_string().contains("invalid --active value"));
+    }
+
+    #[test]
+    fn parse_args_sort_name_explicit() {
+        let cfg =
+            parse_args(vec!["lsu", "--sort", "name"]).expect("explicit name sort should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn parse_args_sort_status_explicit() {
+        let cfg =
+            parse_args(vec!["lsu", "--sort", "status"]).expect("explicit status sort should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Status);
+    }
+
+    #[test]
+    fn parse_args_sort_auto_resolves_based_on_filters() {
+        let cfg = parse_args(vec!["lsu", "--all", "--sort", "auto"])
+            .expect("auto sort with --all should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Status);
+
+        let cfg = parse_args(vec!["lsu", "--sort", "auto"])
+            .expect("auto sort with defaults should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn parse_args_sort_equals_form() {
+        let cfg = parse_args(vec!["lsu", "--sort=status"]).expect("equals form sort should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Status);
+
+        let cfg =
+            parse_args(vec!["lsu", "--sort=name"]).expect("equals form name sort should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn parse_args_sort_rejects_invalid_value() {
+        let err = parse_args(vec!["lsu", "--sort", "bogus"]).expect_err("invalid sort");
+        assert!(err.to_string().contains("invalid --sort value"));
+    }
+
+    #[test]
+    fn parse_args_sort_rejects_invalid_equals_value() {
+        let err = parse_args(vec!["lsu", "--sort=bogus"]).expect_err("invalid sort equals");
+        assert!(err.to_string().contains("invalid --sort value"));
+    }
+
+    #[test]
+    fn parse_args_sort_rejects_missing_value() {
+        let err = parse_args(vec!["lsu", "--sort"]).expect_err("missing sort value");
+        assert!(err.to_string().contains("missing value for --sort"));
+    }
+
+    #[test]
+    fn parse_args_sort_default_auto_with_specific_filters_resolves_to_name() {
+        let cfg = parse_args(vec!["lsu", "--sub", "dead"]).expect("sub filter should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Name);
+    }
+
+    #[test]
+    fn parse_args_sort_default_auto_with_all_filters_all_resolves_to_status() {
+        let cfg = parse_args(vec![
+            "lsu", "--load", "all", "--active", "all", "--sub", "all",
+        ])
+        .expect("all filters all should parse");
+        assert_eq!(cfg.sort_mode, SortMode::Status);
+    }
+
+    #[test]
+    fn usage_mentions_sort_flag() {
+        assert!(usage().contains("--sort"));
     }
 
     #[cfg(not(feature = "debug_tui"))]

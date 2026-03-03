@@ -26,7 +26,8 @@ use crate::{
     rows::{seed_logs_from_previous, sort_rows, status_dot},
     systemd::{action_for_start_stop_states, action_for_unit_file_state},
     types::{
-        ActionResolutionRequest, ConfirmationState, DetailLogEntry, UnitAction, UnitRow, WorkerMsg,
+        ActionResolutionRequest, ConfirmationState, DetailLogEntry, SortMode, UnitAction, UnitRow,
+        WorkerMsg,
     },
 };
 
@@ -316,7 +317,7 @@ pub(super) fn spawn_debug_refresh_worker(previous_rows: Vec<UnitRow>) -> Receive
     thread::spawn(move || {
         let mut rows = build_debug_rows();
         seed_logs_from_previous(&mut rows, &previous_rows);
-        sort_rows(&mut rows, true);
+        sort_rows(&mut rows, SortMode::Status);
         let total = rows.len();
 
         if tx.send(WorkerMsg::UnitsLoaded(rows.clone())).is_err() {
@@ -444,7 +445,7 @@ mod tests {
     #[test]
     fn debug_rows_use_normal_all_mode_sorting_after_generation() {
         let mut rows = build_debug_rows();
-        sort_rows(&mut rows, true);
+        sort_rows(&mut rows, SortMode::Status);
 
         for pair in rows.windows(2) {
             let left = &pair[0];

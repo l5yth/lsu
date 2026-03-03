@@ -243,6 +243,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: crate::types::Scope::System,
+            sort_mode: crate::types::SortMode::Name,
         }
     }
 

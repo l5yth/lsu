@@ -19,6 +19,15 @@
 use ratatui::prelude::Style;
 use serde::Deserialize;
 
+/// Row sort order for the list view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    /// Alphabetical by unit name.
+    Name,
+    /// Rank by load→active→sub→name.
+    Status,
+}
+
 /// Systemd unit scope.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope {
@@ -487,6 +496,13 @@ mod tests {
         assert!(state.logs.is_empty());
         assert_eq!(state.scroll, 0);
         assert!(state.loading);
+    }
+
+    #[test]
+    fn sort_mode_variants_are_constructible_and_comparable() {
+        assert_eq!(SortMode::Name, SortMode::Name);
+        assert_eq!(SortMode::Status, SortMode::Status);
+        assert_ne!(SortMode::Name, SortMode::Status);
     }
 
     #[test]

@@ -27,13 +27,13 @@ use super::debug::{
     spawn_debug_refresh_worker,
 };
 #[cfg(test)]
-use crate::types::Scope;
+use crate::types::{Scope, SortMode};
 use crate::{
     cli::Config,
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{
-        fetch_services, fetch_unit_files, filter_services, is_full_all, merge_unit_file_entries,
+        fetch_services, fetch_unit_files, filter_services, merge_unit_file_entries,
         run_unit_action, select_enable_disable_action, select_start_stop_action, should_fetch_all,
     },
     types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
@@ -65,7 +65,7 @@ pub fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Rece
 
         let mut rows = build_rows(units);
         seed_logs_from_previous(&mut rows, &previous_rows);
-        sort_rows(&mut rows, is_full_all(&config));
+        sort_rows(&mut rows, config.sort_mode);
         let total = rows.len();
 
         if tx.send(WorkerMsg::UnitsLoaded(rows.clone())).is_err() {
@@ -225,6 +225,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -253,6 +254,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -292,6 +294,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::User,
+            sort_mode: SortMode::Name,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -313,6 +316,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -342,6 +346,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             "a.service".to_string(),
             7,
@@ -374,6 +379,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             "error.service".to_string(),
             9,
@@ -406,6 +412,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             "demo.service".to_string(),
             UnitAction::Start,
@@ -433,6 +440,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             "action-error.service".to_string(),
             UnitAction::Stop,
@@ -465,6 +473,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             ActionResolutionRequest::StartStop {
                 unit: "running.service".to_string(),
@@ -493,6 +502,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             ActionResolutionRequest::StartStop {
                 unit: "refreshing.service".to_string(),
@@ -521,6 +531,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             ActionResolutionRequest::StartStop {
                 unit: "stopped.service".to_string(),
@@ -552,6 +563,7 @@ mod tests {
                 show_version: false,
                 debug_tui: false,
                 scope: Scope::System,
+                sort_mode: SortMode::Name,
             },
             ActionResolutionRequest::StartStop {
                 unit: "masked.service".to_string(),
@@ -579,6 +591,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
 
         let rx = spawn_action_resolution_worker(
@@ -649,6 +662,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Status,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -683,6 +697,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::User,
+            sort_mode: SortMode::Status,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -710,6 +725,7 @@ mod tests {
             show_version: false,
             debug_tui: true,
             scope: Scope::User,
+            sort_mode: SortMode::Name,
         };
         let rx = spawn_refresh_worker(cfg, Vec::new());
         match rx
@@ -735,6 +751,7 @@ mod tests {
             show_version: false,
             debug_tui: true,
             scope: Scope::User,
+            sort_mode: SortMode::Name,
         };
 
         let resolution_rx = spawn_action_resolution_worker(

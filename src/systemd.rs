@@ -26,6 +26,8 @@ use std::process::{Command, Stdio};
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
 use std::collections::HashSet;
 
+#[cfg(test)]
+use crate::types::SortMode;
 use crate::{
     cli::Config,
     types::{Scope, SystemctlUnit, UnitAction, UnitFileEntry},
@@ -34,11 +36,6 @@ use crate::{
 /// Match one state value against a filter value (`all` means wildcard).
 pub fn filter_matches(value: &str, wanted: &str) -> bool {
     wanted == "all" || value == wanted
-}
-
-/// Whether all filter dimensions are set to `all`.
-pub fn is_full_all(cfg: &Config) -> bool {
-    cfg.load_filter == "all" && cfg.active_filter == "all" && cfg.sub_filter == "all"
 }
 
 /// Whether the query must fetch the full set instead of `--state=running`.
@@ -401,6 +398,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         let units = vec![
             SystemctlUnit {
@@ -542,26 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn is_full_all_only_true_when_all_three_filters_are_all() {
-        let all_cfg = Config {
-            load_filter: "all".to_string(),
-            active_filter: "all".to_string(),
-            sub_filter: "all".to_string(),
-            show_help: false,
-            show_version: false,
-            debug_tui: false,
-            scope: Scope::System,
-        };
-        assert!(is_full_all(&all_cfg));
-
-        let partial_cfg = Config {
-            sub_filter: "running".to_string(),
-            ..all_cfg
-        };
-        assert!(!is_full_all(&partial_cfg));
-    }
-
-    #[test]
     fn should_fetch_all_only_false_for_default_running_filter_set() {
         let default_cfg = Config {
             load_filter: "all".to_string(),
@@ -571,6 +549,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         assert!(!should_fetch_all(&default_cfg));
 

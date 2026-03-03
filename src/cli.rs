@@ -323,7 +323,6 @@ Options:
                        final-watchdog, cleaning)
       --sort <value>   Sort order for the list view (auto, name, status)
                        auto (default): status when all filters are 'all', name otherwise
-  -i, --installed      Include unit-file-only services not loaded by systemd
   -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright"
@@ -729,12 +728,6 @@ mod tests {
             let cfg = parse_args(vec!["lsu", "--sub", value]).expect("sub should parse");
             assert_eq!(cfg.sub_filter, value);
         }
-    }
-
-    #[test]
-    fn usage_mentions_installed_flag() {
-        assert!(usage().contains("--installed"));
-        assert!(usage().contains("-i, --installed"));
     }
 
     #[test]

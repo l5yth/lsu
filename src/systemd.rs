@@ -24,19 +24,18 @@ use std::process::{Command, Stdio};
 
 #[cfg(not(test))]
 use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
+use std::collections::HashSet;
+
+#[cfg(test)]
+use crate::types::SortMode;
 use crate::{
     cli::Config,
-    types::{Scope, SystemctlUnit, UnitAction},
+    types::{Scope, SystemctlUnit, UnitAction, UnitFileEntry},
 };
 
 /// Match one state value against a filter value (`all` means wildcard).
 pub fn filter_matches(value: &str, wanted: &str) -> bool {
     wanted == "all" || value == wanted
-}
-
-/// Whether all filter dimensions are set to `all`.
-pub fn is_full_all(cfg: &Config) -> bool {
-    cfg.load_filter == "all" && cfg.active_filter == "all" && cfg.sub_filter == "all"
 }
 
 /// Whether the query must fetch the full set instead of `--state=running`.
@@ -212,6 +211,32 @@ pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>
     Ok(units)
 }
 
+/// Query unit files via `systemctl list-unit-files --type=service --output=json`.
+#[cfg(not(test))]
+pub fn fetch_unit_files(scope: Scope) -> Result<Vec<UnitFileEntry>> {
+    let systemctl = resolve_trusted_binary("systemctl")?;
+    let mut cmd = Command::new(systemctl);
+    cmd.arg("list-unit-files")
+        .arg(scope.as_systemd_arg())
+        .arg("--no-pager")
+        .arg("--type=service")
+        .arg("--output=json");
+
+    let s = match cmd_stdout(&mut cmd) {
+        Ok(s) => s,
+        Err(CommandExecError::Timeout { .. }) => {
+            bail!(
+                "systemctl list-unit-files timed out after {}s",
+                command_timeout().as_secs()
+            )
+        }
+        Err(e) => return Err(e).context("systemctl list-unit-files failed"),
+    };
+    let entries: Vec<UnitFileEntry> =
+        serde_json::from_str(&s).context("failed to parse systemctl list-unit-files JSON")?;
+    Ok(entries)
+}
+
 #[cfg(test)]
 /// Test-build stub for `fetch_services`; runtime I/O path is tested in integration environments.
 pub fn fetch_services(scope: Scope, show_all: bool) -> Result<Vec<SystemctlUnit>> {
@@ -284,6 +309,47 @@ pub fn run_unit_action(_scope: Scope, unit: &str, _action: UnitAction) -> Result
     Ok(())
 }
 
+/// Test-build stub for `fetch_unit_files`.
+#[cfg(test)]
+pub fn fetch_unit_files(scope: Scope) -> Result<Vec<UnitFileEntry>> {
+    if matches!(scope, Scope::User) {
+        return Err(anyhow!("unit-files test error"));
+    }
+    Ok(vec![
+        UnitFileEntry {
+            unit_file: "a.service".to_string(),
+            state: "enabled".to_string(),
+            preset: Some("enabled".to_string()),
+        },
+        UnitFileEntry {
+            unit_file: "unloaded.service".to_string(),
+            state: "disabled".to_string(),
+            preset: None,
+        },
+    ])
+}
+
+/// Merge unit-file entries into existing units, adding synthetic stubs for new ones.
+pub fn merge_unit_file_entries(
+    existing: Vec<SystemctlUnit>,
+    unit_files: Vec<UnitFileEntry>,
+) -> Vec<SystemctlUnit> {
+    let known: HashSet<String> = existing.iter().map(|u| u.unit.clone()).collect();
+    let mut merged = existing;
+    for entry in unit_files {
+        if !known.contains(&entry.unit_file) {
+            merged.push(SystemctlUnit {
+                unit: entry.unit_file,
+                load: "stub".to_string(),
+                active: "inactive".to_string(),
+                sub: "dead".to_string(),
+                description: String::new(),
+            });
+        }
+    }
+    merged
+}
+
 /// Apply CLI load/active/sub filters to fetched units.
 pub fn filter_services(units: Vec<SystemctlUnit>, cfg: &Config) -> Vec<SystemctlUnit> {
     units
@@ -332,6 +398,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         let units = vec![
             SystemctlUnit {
@@ -473,26 +540,6 @@ mod tests {
     }
 
     #[test]
-    fn is_full_all_only_true_when_all_three_filters_are_all() {
-        let all_cfg = Config {
-            load_filter: "all".to_string(),
-            active_filter: "all".to_string(),
-            sub_filter: "all".to_string(),
-            show_help: false,
-            show_version: false,
-            debug_tui: false,
-            scope: Scope::System,
-        };
-        assert!(is_full_all(&all_cfg));
-
-        let partial_cfg = Config {
-            sub_filter: "running".to_string(),
-            ..all_cfg
-        };
-        assert!(!is_full_all(&partial_cfg));
-    }
-
-    #[test]
     fn should_fetch_all_only_false_for_default_running_filter_set() {
         let default_cfg = Config {
             load_filter: "all".to_string(),
@@ -502,6 +549,7 @@ mod tests {
             show_version: false,
             debug_tui: false,
             scope: Scope::System,
+            sort_mode: SortMode::Name,
         };
         assert!(!should_fetch_all(&default_cfg));
 
@@ -618,5 +666,84 @@ mod tests {
     fn fetch_services_test_stub_errors_for_user_scope() {
         let err = fetch_services(Scope::User, false).expect_err("stub should fail");
         assert!(err.to_string().contains("systemd test error"));
+    }
+
+    #[test]
+    fn fetch_unit_files_test_stub_returns_entries() {
+        let entries = fetch_unit_files(Scope::System).expect("stub should succeed");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].unit_file, "a.service");
+        assert_eq!(entries[1].unit_file, "unloaded.service");
+    }
+
+    #[test]
+    fn fetch_unit_files_test_stub_errors_for_user_scope() {
+        let err = fetch_unit_files(Scope::User).expect_err("stub should fail");
+        assert!(err.to_string().contains("unit-files test error"));
+    }
+
+    #[test]
+    fn merge_unit_file_entries_deduplicates_existing_units() {
+        let existing = vec![SystemctlUnit {
+            unit: "a.service".to_string(),
+            load: "loaded".to_string(),
+            active: "active".to_string(),
+            sub: "running".to_string(),
+            description: "A".to_string(),
+        }];
+        let unit_files = vec![
+            UnitFileEntry {
+                unit_file: "a.service".to_string(),
+                state: "enabled".to_string(),
+                preset: Some("enabled".to_string()),
+            },
+            UnitFileEntry {
+                unit_file: "new.service".to_string(),
+                state: "disabled".to_string(),
+                preset: None,
+            },
+        ];
+        let merged = merge_unit_file_entries(existing, unit_files);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].unit, "a.service");
+        assert_eq!(merged[0].load, "loaded");
+        assert_eq!(merged[1].unit, "new.service");
+        assert_eq!(merged[1].load, "stub");
+        assert_eq!(merged[1].active, "inactive");
+        assert_eq!(merged[1].sub, "dead");
+        assert!(merged[1].description.is_empty());
+    }
+
+    #[test]
+    fn merge_unit_file_entries_handles_empty_existing() {
+        let unit_files = vec![UnitFileEntry {
+            unit_file: "only.service".to_string(),
+            state: "static".to_string(),
+            preset: None,
+        }];
+        let merged = merge_unit_file_entries(Vec::new(), unit_files);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].unit, "only.service");
+        assert_eq!(merged[0].load, "stub");
+    }
+
+    #[test]
+    fn merge_unit_file_entries_handles_empty_unit_files() {
+        let existing = vec![SystemctlUnit {
+            unit: "a.service".to_string(),
+            load: "loaded".to_string(),
+            active: "active".to_string(),
+            sub: "running".to_string(),
+            description: "A".to_string(),
+        }];
+        let merged = merge_unit_file_entries(existing, Vec::new());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].unit, "a.service");
+    }
+
+    #[test]
+    fn merge_unit_file_entries_handles_both_empty() {
+        let merged = merge_unit_file_entries(Vec::new(), Vec::new());
+        assert!(merged.is_empty());
     }
 }

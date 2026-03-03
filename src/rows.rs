@@ -18,7 +18,7 @@
 
 use ratatui::prelude::{Color, Style};
 
-use crate::types::{SystemctlUnit, UnitRow};
+use crate::types::{SortMode, SystemctlUnit, UnitRow};
 
 /// Select status indicator glyph and color based on active/sub state.
 pub fn status_dot(active: &str, sub: &str) -> (char, Style) {
@@ -79,25 +79,28 @@ pub fn build_rows(units: Vec<SystemctlUnit>) -> Vec<UnitRow> {
         .collect()
 }
 
-/// Sort rows according to mode-specific ordering.
-pub fn sort_rows(rows: &mut [UnitRow], show_all: bool) {
-    if show_all {
-        rows.sort_by(|a, b| {
-            (
-                load_rank(&a.load),
-                active_rank(&a.active),
-                sub_rank(&a.sub),
-                a.unit.as_str(),
-            )
-                .cmp(&(
-                    load_rank(&b.load),
-                    active_rank(&b.active),
-                    sub_rank(&b.sub),
-                    b.unit.as_str(),
-                ))
-        });
-    } else {
-        rows.sort_by(|a, b| a.unit.cmp(&b.unit));
+/// Sort rows according to the chosen sort mode.
+pub fn sort_rows(rows: &mut [UnitRow], sort_mode: SortMode) {
+    match sort_mode {
+        SortMode::Status => {
+            rows.sort_by(|a, b| {
+                (
+                    load_rank(&a.load),
+                    active_rank(&a.active),
+                    sub_rank(&a.sub),
+                    a.unit.as_str(),
+                )
+                    .cmp(&(
+                        load_rank(&b.load),
+                        active_rank(&b.active),
+                        sub_rank(&b.sub),
+                        b.unit.as_str(),
+                    ))
+            });
+        }
+        SortMode::Name => {
+            rows.sort_by(|a, b| a.unit.cmp(&b.unit));
+        }
     }
 }
 
@@ -170,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_rows_all_mode_respects_priority_order() {
+    fn sort_rows_status_mode_respects_priority_order() {
         let mut rows = vec![
             UnitRow {
                 dot: '●',
@@ -204,14 +207,14 @@ mod tests {
             },
         ];
 
-        sort_rows(&mut rows, true);
+        sort_rows(&mut rows, SortMode::Status);
         assert_eq!(rows[0].unit, "a.service");
         assert_eq!(rows[1].unit, "z.service");
         assert_eq!(rows[2].unit, "m.service");
     }
 
     #[test]
-    fn sort_rows_running_mode_sorts_by_unit_name_only() {
+    fn sort_rows_name_mode_sorts_by_unit_name_only() {
         let mut rows = vec![
             UnitRow {
                 dot: '●',
@@ -234,7 +237,7 @@ mod tests {
                 last_log: String::new(),
             },
         ];
-        sort_rows(&mut rows, false);
+        sort_rows(&mut rows, SortMode::Name);
         assert_eq!(rows[0].unit, "a.service");
         assert_eq!(rows[1].unit, "z.service");
     }

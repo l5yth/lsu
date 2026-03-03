@@ -19,6 +19,15 @@
 use ratatui::prelude::Style;
 use serde::Deserialize;
 
+/// Row sort order for the list view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortMode {
+    /// Alphabetical by unit name.
+    Name,
+    /// Rank by load→active→sub→name.
+    Status,
+}
+
 /// Systemd unit scope.
 #[derive(Debug, Clone, Copy)]
 pub enum Scope {
@@ -51,6 +60,18 @@ pub struct SystemctlUnit {
     pub sub: String,
     /// Human-readable unit description.
     pub description: String,
+}
+
+/// JSON row returned by `systemctl list-unit-files --output=json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnitFileEntry {
+    /// Unit file name, e.g. `foo.service`.
+    pub unit_file: String,
+    /// Unit file state (enabled, disabled, static, masked, etc.).
+    pub state: String,
+    /// Unit file preset (enabled or disabled), `None` for static/alias units.
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 /// Render-ready row for the list table.
@@ -366,6 +387,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_unit_file_entry_from_json() {
+        let raw = r#"
+        [
+          {
+            "unit_file": "foo.service",
+            "state": "enabled",
+            "preset": "disabled"
+          },
+          {
+            "unit_file": "bar.service",
+            "state": "static",
+            "preset": null
+          }
+        ]
+        "#;
+
+        let entries: Vec<UnitFileEntry> = serde_json::from_str(raw).expect("valid JSON");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].unit_file, "foo.service");
+        assert_eq!(entries[0].state, "enabled");
+        assert_eq!(entries[0].preset.as_deref(), Some("disabled"));
+        assert_eq!(entries[1].unit_file, "bar.service");
+        assert_eq!(entries[1].state, "static");
+        assert_eq!(entries[1].preset, None);
+    }
+
+    #[test]
     fn detail_state_begin_sets_loading_and_resets_scroll() {
         let mut state = DetailState {
             scroll: 7,
@@ -448,6 +496,13 @@ mod tests {
         assert!(state.logs.is_empty());
         assert_eq!(state.scroll, 0);
         assert!(state.loading);
+    }
+
+    #[test]
+    fn sort_mode_variants_are_constructible_and_comparable() {
+        assert_eq!(SortMode::Name, SortMode::Name);
+        assert_eq!(SortMode::Status, SortMode::Status);
+        assert_ne!(SortMode::Name, SortMode::Status);
     }
 
     #[test]

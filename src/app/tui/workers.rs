@@ -49,10 +49,17 @@ pub fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Rece
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let fetch_all = should_fetch_all(&config);
+        let include_unit_files = config.load_filter == "all"
+            && config.active_filter == "all"
+            && config.sub_filter == "all";
         let units = match fetch_services(config.scope, fetch_all)
             .and_then(|units| {
-                let unit_files = fetch_unit_files(config.scope)?;
-                Ok(merge_unit_file_entries(units, unit_files))
+                if include_unit_files {
+                    let unit_files = fetch_unit_files(config.scope)?;
+                    Ok(merge_unit_file_entries(units, unit_files))
+                } else {
+                    Ok(units)
+                }
             })
             .map(|u| filter_services(u, &config))
         {

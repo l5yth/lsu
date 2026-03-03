@@ -289,6 +289,7 @@ Options:
                        reload, reload-post, reload-signal, reload-notify, stop, stop-watchdog,
                        stop-sigterm, stop-sigkill, stop-post, final-sigterm, final-sigkill,
                        final-watchdog, cleaning)
+  -i, --installed      Include unit-file-only services not loaded by systemd
   -u, --user           Show units in user instead of system scope
   -h, --help           Show this help text
   -v, --version        Show version and copyright"
@@ -670,6 +671,12 @@ mod tests {
             let cfg = parse_args(vec!["lsu", "--sub", value]).expect("sub should parse");
             assert_eq!(cfg.sub_filter, value);
         }
+    }
+
+    #[test]
+    fn usage_mentions_installed_flag() {
+        assert!(usage().contains("--installed"));
+        assert!(usage().contains("-i, --installed"));
     }
 
     #[test]

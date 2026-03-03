@@ -53,6 +53,18 @@ pub struct SystemctlUnit {
     pub description: String,
 }
 
+/// JSON row returned by `systemctl list-unit-files --output=json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnitFileEntry {
+    /// Unit file name, e.g. `foo.service`.
+    pub unit_file: String,
+    /// Unit file state (enabled, disabled, static, masked, etc.).
+    pub state: String,
+    /// Unit file preset (enabled or disabled), `None` for static/alias units.
+    #[serde(default)]
+    pub preset: Option<String>,
+}
+
 /// Render-ready row for the list table.
 #[derive(Debug, Clone)]
 pub struct UnitRow {
@@ -363,6 +375,33 @@ mod tests {
             time: "t".to_string(),
             log: text.to_string(),
         }
+    }
+
+    #[test]
+    fn parses_unit_file_entry_from_json() {
+        let raw = r#"
+        [
+          {
+            "unit_file": "foo.service",
+            "state": "enabled",
+            "preset": "disabled"
+          },
+          {
+            "unit_file": "bar.service",
+            "state": "static",
+            "preset": null
+          }
+        ]
+        "#;
+
+        let entries: Vec<UnitFileEntry> = serde_json::from_str(raw).expect("valid JSON");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].unit_file, "foo.service");
+        assert_eq!(entries[0].state, "enabled");
+        assert_eq!(entries[0].preset.as_deref(), Some("disabled"));
+        assert_eq!(entries[1].unit_file, "bar.service");
+        assert_eq!(entries[1].state, "static");
+        assert_eq!(entries[1].preset, None);
     }
 
     #[test]

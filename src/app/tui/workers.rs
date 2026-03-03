@@ -33,8 +33,8 @@ use crate::{
     journal::{fetch_unit_logs, latest_log_lines_batch},
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{
-        fetch_services, filter_services, is_full_all, run_unit_action,
-        select_enable_disable_action, select_start_stop_action, should_fetch_all,
+        fetch_services, fetch_unit_files, filter_services, is_full_all, merge_unit_file_entries,
+        run_unit_action, select_enable_disable_action, select_start_stop_action, should_fetch_all,
     },
     types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
 };
@@ -49,14 +49,19 @@ pub fn spawn_refresh_worker(config: Config, previous_rows: Vec<UnitRow>) -> Rece
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let fetch_all = should_fetch_all(&config);
-        let units =
-            match fetch_services(config.scope, fetch_all).map(|u| filter_services(u, &config)) {
-                Ok(units) => units,
-                Err(e) => {
-                    let _ = tx.send(WorkerMsg::Error(e.to_string()));
-                    return;
-                }
-            };
+        let units = match fetch_services(config.scope, fetch_all)
+            .and_then(|units| {
+                let unit_files = fetch_unit_files(config.scope)?;
+                Ok(merge_unit_file_entries(units, unit_files))
+            })
+            .map(|u| filter_services(u, &config))
+        {
+            Ok(units) => units,
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::Error(e.to_string()));
+                return;
+            }
+        };
 
         let mut rows = build_rows(units);
         seed_logs_from_previous(&mut rows, &previous_rows);
@@ -631,6 +636,66 @@ mod tests {
                 assert!(error.contains("does not support enable/disable"));
             }
             other => panic!("expected ActionResolutionError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_worker_includes_unit_file_entries_when_installed_flag_set() {
+        let cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "all".to_string(),
+            sub_filter: "all".to_string(),
+            show_help: false,
+            show_version: false,
+            debug_tui: false,
+            scope: Scope::System,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("units msg")
+        {
+            WorkerMsg::UnitsLoaded(rows) => {
+                assert!(
+                    rows.iter().any(|r| r.unit == "unloaded.service"),
+                    "unit-file-only entry should appear"
+                );
+                assert!(
+                    rows.iter().any(|r| r.unit == "a.service"),
+                    "existing entry should still appear"
+                );
+                let unloaded = rows.iter().find(|r| r.unit == "unloaded.service").unwrap();
+                assert_eq!(unloaded.load, "stub");
+                assert_eq!(unloaded.active, "inactive");
+                assert_eq!(unloaded.sub, "dead");
+            }
+            other => panic!("expected UnitsLoaded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_worker_emits_error_when_unit_file_fetch_fails() {
+        let cfg = Config {
+            load_filter: "all".to_string(),
+            active_filter: "all".to_string(),
+            sub_filter: "all".to_string(),
+            show_help: false,
+            show_version: false,
+            debug_tui: false,
+            scope: Scope::User,
+        };
+        let rx = spawn_refresh_worker(cfg, Vec::new());
+        match rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("error msg")
+        {
+            WorkerMsg::Error(msg) => {
+                assert!(
+                    msg.contains("test error"),
+                    "should propagate fetch error: {msg}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

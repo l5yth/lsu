@@ -86,11 +86,15 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            emerge --oneshot dev-lang/rust-bin
 
-      - name: Build ebuild from local checkout
+      - name: Validate dependency resolution
         run: |
-          EGIT_REPO_URI="file://${GITHUB_WORKSPACE}" \
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            emerge -pv =app-misc/lsu-9999
+
+      - name: Build ebuild
+        run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
             ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild fetch unpack compile

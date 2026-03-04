@@ -19,7 +19,7 @@ RDEPEND="
 	sys-apps/systemd
 "
 BDEPEND="
-	dev-lang/rust
+	virtual/rust
 "
 
 src_unpack() {

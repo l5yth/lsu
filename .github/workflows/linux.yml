@@ -97,4 +97,4 @@ jobs:
       - name: Build ebuild
         run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
-            ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild fetch unpack compile
+            ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild fetch unpack compile test

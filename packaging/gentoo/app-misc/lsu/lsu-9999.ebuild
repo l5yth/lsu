@@ -16,10 +16,7 @@ IUSE=""
 PROPERTIES="live"
 
 RDEPEND="
-	|| (
-		sys-apps/systemd
-		sys-apps/systemd-utils
-	)
+	sys-apps/systemd
 "
 BDEPEND="
 	dev-lang/rust
@@ -31,7 +28,11 @@ src_unpack() {
 }
 
 src_compile() {
-	cargo_src_compile --bin lsu
+	cargo_src_compile --locked --bin lsu
+}
+
+src_test() {
+	cargo_src_test --locked --all-features
 }
 
 src_install() {

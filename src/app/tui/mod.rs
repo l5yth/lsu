@@ -52,6 +52,7 @@ use std::{
 use crate::{
     cli::{parse_args, usage, version_text},
     rows::preserve_selection,
+    systemd::run_unit_action,
     types::{
         ActionResolutionRequest, ConfirmationState, DetailState, LoadPhase, UnitAction, UnitRow,
         ViewMode, WorkerMsg,
@@ -63,13 +64,11 @@ use self::{
     input::{UiCommand, map_confirmation_key, map_key},
     render::draw_frame,
     state::{
-        MODE_LABEL, action_resolution_status_text, action_status_text, list_status_text,
-        loading_units_status_text, stale_status_text,
+        MODE_LABEL, action_error_status_text, action_queued_status_text,
+        action_resolution_status_text, list_status_text, loading_units_status_text,
+        stale_status_text,
     },
-    workers::{
-        spawn_action_resolution_worker, spawn_detail_worker, spawn_refresh_worker,
-        spawn_unit_action_worker,
-    },
+    workers::{spawn_action_resolution_worker, spawn_detail_worker, spawn_refresh_worker},
 };
 
 #[cfg(not(test))]
@@ -86,6 +85,26 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Res
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
+    Ok(())
+}
+
+/// Suspend the TUI so external processes (e.g. polkit auth agents) can use the terminal.
+#[cfg(not(test))]
+fn suspend_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    disable_raw_mode().context("disable_raw_mode failed")?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)
+        .context("LeaveAlternateScreen failed")?;
+    terminal.show_cursor().context("show_cursor failed")?;
+    Ok(())
+}
+
+/// Resume the TUI after a suspension, clearing any output left by external processes.
+#[cfg(not(test))]
+fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    execute!(terminal.backend_mut(), EnterAlternateScreen)
+        .context("EnterAlternateScreen failed")?;
+    enable_raw_mode().context("enable_raw_mode failed")?;
+    terminal.clear().context("terminal clear failed")?;
     Ok(())
 }
 
@@ -214,41 +233,6 @@ fn apply_action_resolution_msg(
     }
 }
 
-fn apply_action_worker_msg(
-    refresh_requested: &mut bool,
-    status_line: &mut String,
-    status_line_overrides_stale: &mut bool,
-    rows_len: usize,
-    msg: crate::types::WorkerMsg,
-) -> bool {
-    match msg {
-        crate::types::WorkerMsg::UnitActionQueued { unit, action } => {
-            *refresh_requested = true;
-            set_status_line(
-                status_line,
-                status_line_overrides_stale,
-                self::state::action_queued_status_text(rows_len, action, &unit),
-                true,
-            );
-            true
-        }
-        crate::types::WorkerMsg::UnitActionError {
-            unit,
-            action,
-            error,
-        } => {
-            set_status_line(
-                status_line,
-                status_line_overrides_stale,
-                self::state::action_error_status_text(rows_len, action, &unit, &error),
-                true,
-            );
-            true
-        }
-        _ => false,
-    }
-}
-
 const UNIT_ACTION_REFRESH_DELAY: Duration = Duration::from_millis(500);
 
 fn defer_queued_action_refresh(
@@ -296,7 +280,6 @@ pub fn run() -> Result<()> {
     let mut worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut detail_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut action_resolution_worker_rx: Option<Receiver<WorkerMsg>> = None;
-    let mut action_worker_rx: Option<Receiver<WorkerMsg>> = None;
     let mut queued_action_refresh_deadline: Option<Instant> = None;
     let mut loaded_once = false;
     let mut last_load_error = false;
@@ -534,41 +517,6 @@ pub fn run() -> Result<()> {
                 }
             }
 
-            if let Some(rx) = action_worker_rx.as_ref() {
-                let mut clear_action_worker = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(msg) => {
-                            let refresh_was_requested = refresh_requested;
-                            clear_action_worker = apply_action_worker_msg(
-                                &mut refresh_requested,
-                                &mut status_line,
-                                &mut status_line_overrides_stale,
-                                rows.len(),
-                                msg,
-                            );
-                            defer_queued_action_refresh(
-                                &mut refresh_requested,
-                                &mut queued_action_refresh_deadline,
-                                refresh_was_requested,
-                                Instant::now(),
-                            );
-                            if clear_action_worker {
-                                break;
-                            }
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            clear_action_worker = true;
-                            break;
-                        }
-                    }
-                }
-                if clear_action_worker {
-                    action_worker_rx = None;
-                }
-            }
-
             if event::poll(Duration::from_millis(50))?
                 && let Event::Key(k) = event::read()?
                 && k.kind == KeyEventKind::Press
@@ -579,62 +527,136 @@ pub fn run() -> Result<()> {
                 {
                     match cmd {
                         UiCommand::Confirm => {
-                            if action_worker_rx.is_none()
-                                && let Some(pending) = confirmation.take()
+                            if let Some(pending) = confirmation.take()
                                 && let Some(action) = pending.confirmed_action()
                             {
-                                let status_confirmation =
-                                    ConfirmationState::confirm_action(action, pending.unit.clone());
-                                set_status_line(
-                                    &mut status_line,
-                                    &mut status_line_overrides_stale,
-                                    action_status_text(rows.len(), &status_confirmation),
-                                    true,
+                                suspend_terminal(&mut terminal)?;
+                                let result = run_unit_action(config.scope, &pending.unit, action);
+                                resume_terminal(&mut terminal)?;
+                                let refresh_was_requested = refresh_requested;
+                                match result {
+                                    Ok(()) => {
+                                        refresh_requested = true;
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_queued_status_text(
+                                                rows.len(),
+                                                action,
+                                                &pending.unit,
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_error_status_text(
+                                                rows.len(),
+                                                action,
+                                                &pending.unit,
+                                                &e.to_string(),
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                }
+                                defer_queued_action_refresh(
+                                    &mut refresh_requested,
+                                    &mut queued_action_refresh_deadline,
+                                    refresh_was_requested,
+                                    Instant::now(),
                                 );
-                                action_worker_rx =
-                                    Some(spawn_unit_action_worker(&config, pending.unit, action));
                             }
                         }
                         UiCommand::ChooseRestart => {
-                            if action_worker_rx.is_none()
-                                && let Some(pending) = confirmation.take()
-                            {
-                                let status_confirmation = ConfirmationState::confirm_action(
+                            if let Some(pending) = confirmation.take() {
+                                suspend_terminal(&mut terminal)?;
+                                let result = run_unit_action(
+                                    config.scope,
+                                    &pending.unit,
                                     UnitAction::Restart,
-                                    pending.unit.clone(),
                                 );
-                                set_status_line(
-                                    &mut status_line,
-                                    &mut status_line_overrides_stale,
-                                    action_status_text(rows.len(), &status_confirmation),
-                                    true,
+                                resume_terminal(&mut terminal)?;
+                                let refresh_was_requested = refresh_requested;
+                                match result {
+                                    Ok(()) => {
+                                        refresh_requested = true;
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_queued_status_text(
+                                                rows.len(),
+                                                UnitAction::Restart,
+                                                &pending.unit,
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_error_status_text(
+                                                rows.len(),
+                                                UnitAction::Restart,
+                                                &pending.unit,
+                                                &e.to_string(),
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                }
+                                defer_queued_action_refresh(
+                                    &mut refresh_requested,
+                                    &mut queued_action_refresh_deadline,
+                                    refresh_was_requested,
+                                    Instant::now(),
                                 );
-                                action_worker_rx = Some(spawn_unit_action_worker(
-                                    &config,
-                                    pending.unit,
-                                    UnitAction::Restart,
-                                ));
                             }
                         }
                         UiCommand::ChooseStop => {
-                            if action_worker_rx.is_none()
-                                && let Some(pending) = confirmation.take()
-                            {
-                                let status_confirmation = ConfirmationState::confirm_action(
-                                    UnitAction::Stop,
-                                    pending.unit.clone(),
+                            if let Some(pending) = confirmation.take() {
+                                suspend_terminal(&mut terminal)?;
+                                let result =
+                                    run_unit_action(config.scope, &pending.unit, UnitAction::Stop);
+                                resume_terminal(&mut terminal)?;
+                                let refresh_was_requested = refresh_requested;
+                                match result {
+                                    Ok(()) => {
+                                        refresh_requested = true;
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_queued_status_text(
+                                                rows.len(),
+                                                UnitAction::Stop,
+                                                &pending.unit,
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        set_status_line(
+                                            &mut status_line,
+                                            &mut status_line_overrides_stale,
+                                            action_error_status_text(
+                                                rows.len(),
+                                                UnitAction::Stop,
+                                                &pending.unit,
+                                                &e.to_string(),
+                                            ),
+                                            true,
+                                        );
+                                    }
+                                }
+                                defer_queued_action_refresh(
+                                    &mut refresh_requested,
+                                    &mut queued_action_refresh_deadline,
+                                    refresh_was_requested,
+                                    Instant::now(),
                                 );
-                                set_status_line(
-                                    &mut status_line,
-                                    &mut status_line_overrides_stale,
-                                    action_status_text(rows.len(), &status_confirmation),
-                                    true,
-                                );
-                                action_worker_rx = Some(spawn_unit_action_worker(
-                                    &config,
-                                    pending.unit,
-                                    UnitAction::Stop,
-                                ));
                             }
                         }
                         UiCommand::Cancel => {
@@ -748,8 +770,7 @@ pub fn run() -> Result<()> {
                             }
                         }
                         UiCommand::RequestStartStop => {
-                            if action_worker_rx.is_none()
-                                && action_resolution_worker_rx.is_none()
+                            if action_resolution_worker_rx.is_none()
                                 && let Some(row) = rows.get(selected_idx)
                             {
                                 set_status_line(
@@ -767,8 +788,7 @@ pub fn run() -> Result<()> {
                             }
                         }
                         UiCommand::RequestEnableDisable => {
-                            if action_worker_rx.is_none()
-                                && action_resolution_worker_rx.is_none()
+                            if action_resolution_worker_rx.is_none()
                                 && let Some(row) = rows.get(selected_idx)
                             {
                                 set_status_line(
@@ -812,9 +832,8 @@ mod tests {
     use super::state::{list_status_text, stale_status_text};
     use super::{
         ActionResolutionUiState, UNIT_ACTION_REFRESH_DELAY, activate_queued_action_refresh,
-        apply_action_resolution_msg, apply_action_worker_msg, cancel_pending_action_resolution,
-        defer_queued_action_refresh, restore_list_status_line, set_list_status_line,
-        set_status_line,
+        apply_action_resolution_msg, cancel_pending_action_resolution, defer_queued_action_refresh,
+        restore_list_status_line, set_list_status_line, set_status_line,
     };
     use crate::rows::preserve_selection;
     use crate::types::{
@@ -1394,64 +1413,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_action_worker_msg_updates_refresh_and_status() {
-        let mut refresh_requested = false;
-        let mut status_line = String::new();
-        let mut override_stale = false;
-
-        assert!(apply_action_worker_msg(
-            &mut refresh_requested,
-            &mut status_line,
-            &mut override_stale,
-            3,
-            WorkerMsg::UnitActionQueued {
-                unit: "demo.service".to_string(),
-                action: UnitAction::Restart,
-            },
-        ));
-        assert!(refresh_requested);
-        assert!(status_line.contains("queued restart for demo.service"));
-        assert!(override_stale);
-
-        refresh_requested = false;
-        assert!(apply_action_worker_msg(
-            &mut refresh_requested,
-            &mut status_line,
-            &mut override_stale,
-            3,
-            WorkerMsg::UnitActionError {
-                unit: "demo.service".to_string(),
-                action: UnitAction::Stop,
-                error: "nope".to_string(),
-            },
-        ));
-        assert!(!refresh_requested);
-        assert!(status_line.contains("failed to stop demo.service: nope"));
-        assert!(override_stale);
-    }
-
-    #[test]
-    fn apply_action_worker_msg_preserves_existing_refresh_request_on_queue() {
-        let mut refresh_requested = true;
-        let mut status_line = String::new();
-        let mut override_stale = false;
-
-        assert!(apply_action_worker_msg(
-            &mut refresh_requested,
-            &mut status_line,
-            &mut override_stale,
-            3,
-            WorkerMsg::UnitActionQueued {
-                unit: "demo.service".to_string(),
-                action: UnitAction::Start,
-            },
-        ));
-        assert!(refresh_requested);
-        assert!(status_line.contains("queued start for demo.service"));
-        assert!(override_stale);
-    }
-
-    #[test]
     fn defer_queued_action_refresh_schedules_delayed_list_reload() {
         let mut refresh_requested = true;
         let mut queued_deadline = None;
@@ -1495,23 +1456,5 @@ mod tests {
 
         assert!(refresh_requested);
         assert!(queued_deadline.is_none());
-    }
-
-    #[test]
-    fn apply_action_worker_msg_ignores_unrelated_messages() {
-        let mut refresh_requested = false;
-        let mut status_line = "unchanged".to_string();
-        let mut override_stale = false;
-
-        assert!(!apply_action_worker_msg(
-            &mut refresh_requested,
-            &mut status_line,
-            &mut override_stale,
-            3,
-            WorkerMsg::Finished,
-        ));
-        assert!(!refresh_requested);
-        assert_eq!(status_line, "unchanged");
-        assert!(!override_stale);
     }
 }

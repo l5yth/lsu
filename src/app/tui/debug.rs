@@ -385,6 +385,7 @@ pub(super) fn spawn_debug_action_resolution_worker(
 }
 
 /// Spawn a debug worker that simulates a unit action.
+#[cfg(test)]
 pub(super) fn spawn_debug_action_worker(unit: String, action: UnitAction) -> Receiver<WorkerMsg> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {

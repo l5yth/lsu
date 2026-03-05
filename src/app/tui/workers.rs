@@ -21,11 +21,14 @@ use std::{
     thread,
 };
 
+#[cfg(all(feature = "debug_tui", test))]
+use super::debug::spawn_debug_action_worker;
 #[cfg(feature = "debug_tui")]
 use super::debug::{
-    spawn_debug_action_resolution_worker, spawn_debug_action_worker, spawn_debug_detail_worker,
-    spawn_debug_refresh_worker,
+    spawn_debug_action_resolution_worker, spawn_debug_detail_worker, spawn_debug_refresh_worker,
 };
+#[cfg(test)]
+use crate::systemd::run_unit_action;
 #[cfg(test)]
 use crate::types::{Scope, SortMode};
 use crate::{
@@ -34,7 +37,7 @@ use crate::{
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{
         fetch_services, fetch_unit_files, filter_services, merge_unit_file_entries,
-        run_unit_action, select_enable_disable_action, select_start_stop_action, should_fetch_all,
+        select_enable_disable_action, select_start_stop_action, should_fetch_all,
     },
     types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
 };
@@ -142,6 +145,7 @@ pub fn spawn_detail_worker(config: &Config, unit: String, request_id: u64) -> Re
 }
 
 /// Spawn a background worker that executes one unit action.
+#[cfg(test)]
 pub fn spawn_unit_action_worker(
     config: &Config,
     unit: String,

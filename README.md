@@ -7,6 +7,7 @@
 [![Codecov](https://codecov.io/gh/l5yth/lsu/graph/badge.svg)](https://codecov.io/gh/l5yth/lsu)
 [![GitHub Release](https://img.shields.io/github/v/release/l5yth/lsu)](https://github.com/l5yth/lsu/releases)
 [![Crates.io](https://img.shields.io/crates/v/lsu.svg)](https://crates.io/crates/lsu)
+[![AUR Version](https://img.shields.io/aur/version/lsu-bin)](https://aur.archlinux.org/packages/lsu-bin)
 [![Top Language](https://img.shields.io/github/languages/top/l5yth/lsu)](https://github.com/l5yth/lsu)
 [![License: Apache-2.0](https://img.shields.io/github/license/l5yth/lsu)](https://github.com/l5yth/lsu/blob/main/LICENSE)
 

@@ -60,18 +60,6 @@ pub fn loading_units_status_text() -> String {
     format!("{MODE_LABEL}: loading units... | {}", list_controls_text())
 }
 
-/// Build the footer status text shown while a unit action is running.
-///
-/// `confirmation` must have kind `ConfirmAction`; calling this with a
-/// `RestartOrStop` confirmation is a programming error and will panic.
-pub fn action_status_text(rows: usize, confirmation: &ConfirmationState) -> String {
-    let verb = confirmation
-        .confirmed_action()
-        .expect("action_status_text requires a ConfirmAction confirmation")
-        .prompt_verb();
-    format!("{MODE_LABEL}: {rows} | {} {}...", verb, confirmation.unit)
-}
-
 /// Build the footer status text shown while an action prompt is being resolved.
 pub fn action_resolution_status_text(rows: usize, unit: &str) -> String {
     format!("{MODE_LABEL}: {rows} | resolving action for {unit}...")
@@ -172,14 +160,6 @@ mod tests {
             "foobar.service".to_string(),
         ));
         assert_eq!(s, "confirm disabling of unit foobar.service (y/n)");
-    }
-
-    #[test]
-    fn action_status_text_mentions_running_action() {
-        let confirmation =
-            ConfirmationState::confirm_action(UnitAction::Start, "demo.service".to_string());
-        let s = action_status_text(3, &confirmation);
-        assert!(s.contains("starting demo.service"));
     }
 
     #[test]

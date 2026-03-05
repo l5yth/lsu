@@ -186,7 +186,7 @@ fn run_confirmed_action(
     };
     #[cfg(not(feature = "debug_tui"))]
     let result = {
-        let _ = debug_tui;
+        let _ = debug_tui; // parameter unused without debug_tui feature
         run_unit_action(scope, unit, action)
     };
     resume_terminal(terminal)?;
@@ -524,9 +524,7 @@ pub fn run() -> Result<()> {
                             WorkerMsg::DetailLogsLoaded { .. }
                             | WorkerMsg::DetailLogsError { .. }
                             | WorkerMsg::ActionConfirmationReady { .. }
-                            | WorkerMsg::ActionResolutionError { .. }
-                            | WorkerMsg::UnitActionQueued { .. }
-                            | WorkerMsg::UnitActionError { .. },
+                            | WorkerMsg::ActionResolutionError { .. },
                         ) => continue,
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
@@ -1037,9 +1035,7 @@ mod tests {
             WorkerMsg::DetailLogsLoaded { .. }
             | WorkerMsg::DetailLogsError { .. }
             | WorkerMsg::ActionConfirmationReady { .. }
-            | WorkerMsg::ActionResolutionError { .. }
-            | WorkerMsg::UnitActionQueued { .. }
-            | WorkerMsg::UnitActionError { .. } => false,
+            | WorkerMsg::ActionResolutionError { .. } => false,
         }
     }
 

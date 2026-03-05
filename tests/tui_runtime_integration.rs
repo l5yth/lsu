@@ -67,7 +67,7 @@ fn debug_tui_action_confirmation_paths_are_exercised_with_pty() {
     // Delays:
     //   0.3s  — TUI loads debug units
     //   0.15s — debug action resolution completes (near-instant, but needs one 50ms poll)
-    //   1.0s  — systemctl finishes (may fail, but run_confirmed_action completes) + TUI resumes
+    //   1.0s  — debug stub returns instantly; delay ensures TUI polls and redraws before next key
     let cmd = format!(
         concat!(
             "(sleep 0.3;",

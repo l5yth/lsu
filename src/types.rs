@@ -353,22 +353,6 @@ pub enum WorkerMsg {
         /// Error text to show in the UI.
         error: String,
     },
-    /// A unit action request was accepted and queued successfully.
-    UnitActionQueued {
-        /// Unit for which the action was queued.
-        unit: String,
-        /// Queued action.
-        action: UnitAction,
-    },
-    /// A unit action failed.
-    UnitActionError {
-        /// Unit for which the action was attempted.
-        unit: String,
-        /// Action that failed.
-        action: UnitAction,
-        /// Error text to show in the UI.
-        error: String,
-    },
     /// Refresh worker finished all tasks.
     Finished,
     /// Refresh worker failed with a terminal error.

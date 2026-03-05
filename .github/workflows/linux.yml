@@ -94,12 +94,15 @@ jobs:
 
   nix:
     runs-on: ubuntu-latest
-    container:
-      image: nixpkgs/nix-flakes
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build Nix package
-        run: nix build .#
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}":/repo \
+            -w /repo \
+            nixpkgs/nix-flakes \
+            nix build .#

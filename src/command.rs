@@ -675,6 +675,8 @@ mod tests {
         let err = cmd_wait(&mut cmd).expect_err("command should fail");
         let msg = err.to_string();
         assert!(msg.contains("command failed (status="));
+        // The Display impl appends " | <stderr>" only when stderr is non-empty;
+        // with no output there should be no trailing separator.
         assert!(!msg.contains(" | "));
     }
 

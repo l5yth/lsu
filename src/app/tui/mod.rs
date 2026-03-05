@@ -64,9 +64,9 @@ use self::{
     input::{UiCommand, map_confirmation_key, map_key},
     render::draw_frame,
     state::{
-        MODE_LABEL, action_error_status_text, action_queued_status_text,
-        action_resolution_status_text, list_status_text, loading_units_status_text,
-        stale_status_text,
+        MODE_LABEL, action_authenticating_status_text, action_error_status_text,
+        action_queued_status_text, action_resolution_status_text, list_status_text,
+        loading_units_status_text, stale_status_text,
     },
     workers::{spawn_action_resolution_worker, spawn_detail_worker, spawn_refresh_worker},
 };
@@ -105,6 +105,61 @@ fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Res
         .context("EnterAlternateScreen failed")?;
     enable_raw_mode().context("enable_raw_mode failed")?;
     terminal.clear().context("terminal clear failed")?;
+    Ok(())
+}
+
+/// Suspend the terminal, run a unit action with authentication support, resume, and update status.
+///
+/// Returns `Err` only if terminal suspension or resumption fails; action errors are reported
+/// via `status_line` rather than propagated.
+#[cfg(not(test))]
+#[allow(clippy::too_many_arguments)]
+fn run_confirmed_action(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    scope: crate::types::Scope,
+    unit: &str,
+    action: UnitAction,
+    rows_len: usize,
+    status_line: &mut String,
+    status_line_overrides_stale: &mut bool,
+    refresh_requested: &mut bool,
+    queued_action_refresh_deadline: &mut Option<Instant>,
+) -> Result<()> {
+    set_status_line(
+        status_line,
+        status_line_overrides_stale,
+        action_authenticating_status_text(rows_len, action, unit),
+        true,
+    );
+    suspend_terminal(terminal)?;
+    let result = run_unit_action(scope, unit, action);
+    resume_terminal(terminal)?;
+    let refresh_was_requested = *refresh_requested;
+    match result {
+        Ok(()) => {
+            *refresh_requested = true;
+            set_status_line(
+                status_line,
+                status_line_overrides_stale,
+                action_queued_status_text(rows_len, action, unit),
+                true,
+            );
+        }
+        Err(e) => {
+            set_status_line(
+                status_line,
+                status_line_overrides_stale,
+                action_error_status_text(rows_len, action, unit, &e.to_string()),
+                true,
+            );
+        }
+    }
+    defer_queued_action_refresh(
+        refresh_requested,
+        queued_action_refresh_deadline,
+        refresh_was_requested,
+        Instant::now(),
+    );
     Ok(())
 }
 
@@ -530,133 +585,47 @@ pub fn run() -> Result<()> {
                             if let Some(pending) = confirmation.take()
                                 && let Some(action) = pending.confirmed_action()
                             {
-                                suspend_terminal(&mut terminal)?;
-                                let result = run_unit_action(config.scope, &pending.unit, action);
-                                resume_terminal(&mut terminal)?;
-                                let refresh_was_requested = refresh_requested;
-                                match result {
-                                    Ok(()) => {
-                                        refresh_requested = true;
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_queued_status_text(
-                                                rows.len(),
-                                                action,
-                                                &pending.unit,
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                    Err(e) => {
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_error_status_text(
-                                                rows.len(),
-                                                action,
-                                                &pending.unit,
-                                                &e.to_string(),
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                }
-                                defer_queued_action_refresh(
+                                run_confirmed_action(
+                                    &mut terminal,
+                                    config.scope,
+                                    &pending.unit,
+                                    action,
+                                    rows.len(),
+                                    &mut status_line,
+                                    &mut status_line_overrides_stale,
                                     &mut refresh_requested,
                                     &mut queued_action_refresh_deadline,
-                                    refresh_was_requested,
-                                    Instant::now(),
-                                );
+                                )?;
                             }
                         }
                         UiCommand::ChooseRestart => {
                             if let Some(pending) = confirmation.take() {
-                                suspend_terminal(&mut terminal)?;
-                                let result = run_unit_action(
+                                run_confirmed_action(
+                                    &mut terminal,
                                     config.scope,
                                     &pending.unit,
                                     UnitAction::Restart,
-                                );
-                                resume_terminal(&mut terminal)?;
-                                let refresh_was_requested = refresh_requested;
-                                match result {
-                                    Ok(()) => {
-                                        refresh_requested = true;
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_queued_status_text(
-                                                rows.len(),
-                                                UnitAction::Restart,
-                                                &pending.unit,
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                    Err(e) => {
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_error_status_text(
-                                                rows.len(),
-                                                UnitAction::Restart,
-                                                &pending.unit,
-                                                &e.to_string(),
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                }
-                                defer_queued_action_refresh(
+                                    rows.len(),
+                                    &mut status_line,
+                                    &mut status_line_overrides_stale,
                                     &mut refresh_requested,
                                     &mut queued_action_refresh_deadline,
-                                    refresh_was_requested,
-                                    Instant::now(),
-                                );
+                                )?;
                             }
                         }
                         UiCommand::ChooseStop => {
                             if let Some(pending) = confirmation.take() {
-                                suspend_terminal(&mut terminal)?;
-                                let result =
-                                    run_unit_action(config.scope, &pending.unit, UnitAction::Stop);
-                                resume_terminal(&mut terminal)?;
-                                let refresh_was_requested = refresh_requested;
-                                match result {
-                                    Ok(()) => {
-                                        refresh_requested = true;
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_queued_status_text(
-                                                rows.len(),
-                                                UnitAction::Stop,
-                                                &pending.unit,
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                    Err(e) => {
-                                        set_status_line(
-                                            &mut status_line,
-                                            &mut status_line_overrides_stale,
-                                            action_error_status_text(
-                                                rows.len(),
-                                                UnitAction::Stop,
-                                                &pending.unit,
-                                                &e.to_string(),
-                                            ),
-                                            true,
-                                        );
-                                    }
-                                }
-                                defer_queued_action_refresh(
+                                run_confirmed_action(
+                                    &mut terminal,
+                                    config.scope,
+                                    &pending.unit,
+                                    UnitAction::Stop,
+                                    rows.len(),
+                                    &mut status_line,
+                                    &mut status_line_overrides_stale,
                                     &mut refresh_requested,
                                     &mut queued_action_refresh_deadline,
-                                    refresh_was_requested,
-                                    Instant::now(),
-                                );
+                                )?;
                             }
                         }
                         UiCommand::Cancel => {

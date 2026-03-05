@@ -384,24 +384,6 @@ pub(super) fn spawn_debug_action_resolution_worker(
     rx
 }
 
-/// Spawn a debug worker that simulates a unit action.
-#[cfg(test)]
-pub(super) fn spawn_debug_action_worker(unit: String, action: UnitAction) -> Receiver<WorkerMsg> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        if template_for_unit(&unit).is_some() {
-            let _ = tx.send(WorkerMsg::UnitActionQueued { unit, action });
-        } else {
-            let _ = tx.send(WorkerMsg::UnitActionError {
-                unit,
-                action,
-                error: "unknown debug unit".to_string(),
-            });
-        }
-    });
-    rx
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,19 +634,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn spawn_debug_action_worker_emits_queued_for_known_units() {
-        let rx =
-            spawn_debug_action_worker("debug-api-gateway.service".to_string(), UnitAction::Restart);
-        match rx
-            .recv_timeout(Duration::from_millis(500))
-            .expect("action message")
-        {
-            WorkerMsg::UnitActionQueued { unit, action } => {
-                assert_eq!(unit, "debug-api-gateway.service");
-                assert_eq!(action, UnitAction::Restart);
-            }
-            other => panic!("expected UnitActionQueued, got {other:?}"),
-        }
-    }
 }

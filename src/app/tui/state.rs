@@ -65,6 +65,19 @@ pub fn action_resolution_status_text(rows: usize, unit: &str) -> String {
     format!("{MODE_LABEL}: {rows} | resolving action for {unit}...")
 }
 
+/// Build the footer status text shown while waiting for authentication before a unit action.
+pub fn action_authenticating_status_text(
+    rows: usize,
+    action: crate::types::UnitAction,
+    unit: &str,
+) -> String {
+    format!(
+        "{MODE_LABEL}: {rows} | authenticating {} {}...",
+        action.as_systemctl_arg(),
+        unit,
+    )
+}
+
 /// Build the footer status text after a unit action request is queued.
 pub fn action_queued_status_text(
     rows: usize,
@@ -166,6 +179,12 @@ mod tests {
     fn action_resolution_status_text_mentions_target_unit() {
         let s = action_resolution_status_text(3, "demo.service");
         assert!(s.contains("resolving action for demo.service"));
+    }
+
+    #[test]
+    fn action_authenticating_status_text_mentions_unit_and_action() {
+        let s = action_authenticating_status_text(3, UnitAction::Start, "demo.service");
+        assert!(s.contains("authenticating start demo.service..."));
     }
 
     #[test]

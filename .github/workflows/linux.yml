@@ -32,7 +32,7 @@ jobs:
   ebuild:
     runs-on: ubuntu-latest
     container:
-      image: gentoo/stage3:latest
+      image: gentoo/stage3:systemd
 
     steps:
       - name: Checkout
@@ -53,7 +53,7 @@ jobs:
           emerge --sync --quiet
 
           if [ ! -L /etc/portage/make.profile ]; then
-            profile_path="$(find /var/db/repos/gentoo/profiles/default/linux/amd64 -type f -name make.defaults | head -n1)"
+            profile_path="$(find /var/db/repos/gentoo/profiles/default/linux/amd64 -path '*/systemd*' -name make.defaults | head -n1)"
             if [ -n "${profile_path}" ]; then
               ln -snf "$(dirname "${profile_path}")" /etc/portage/make.profile
             fi

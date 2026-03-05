@@ -23,7 +23,9 @@ use anyhow::{Result, anyhow};
 use std::process::{Command, Stdio};
 
 #[cfg(not(test))]
-use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
+use crate::command::{
+    CommandExecError, cmd_stdout, cmd_wait, command_timeout, resolve_trusted_binary,
+};
 use std::collections::HashSet;
 
 #[cfg(test)]
@@ -157,7 +159,6 @@ fn unit_action_args(scope: Scope, unit: &str, action: UnitAction) -> Vec<String>
     }
     args.extend([
         "--no-block".to_string(),
-        "--no-ask-password".to_string(),
         scope.as_systemd_arg().to_string(),
         unit.to_string(),
     ]);
@@ -172,8 +173,8 @@ pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<(
     for arg in unit_action_args(scope, unit, action) {
         cmd.arg(arg);
     }
-    cmd.stdin(Stdio::null());
-    let _ = cmd_stdout(&mut cmd)
+    cmd.stdin(Stdio::inherit());
+    cmd_wait(&mut cmd)
         .with_context(|| format!("systemctl {} failed", action.as_systemctl_arg()))?;
     Ok(())
 }
@@ -509,14 +510,13 @@ mod tests {
     }
 
     #[test]
-    fn unit_action_args_use_non_blocking_non_interactive_flags() {
+    fn unit_action_args_use_non_blocking_flag() {
         let args = unit_action_args(Scope::System, "demo.service", UnitAction::Restart);
         assert_eq!(
             args,
             vec![
                 "restart".to_string(),
                 "--no-block".to_string(),
-                "--no-ask-password".to_string(),
                 "--system".to_string(),
                 "demo.service".to_string(),
             ]
@@ -532,7 +532,6 @@ mod tests {
                 "disable".to_string(),
                 "--runtime".to_string(),
                 "--no-block".to_string(),
-                "--no-ask-password".to_string(),
                 "--user".to_string(),
                 "demo.service".to_string(),
             ]

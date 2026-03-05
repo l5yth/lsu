@@ -23,8 +23,7 @@ use std::{
 
 #[cfg(feature = "debug_tui")]
 use super::debug::{
-    spawn_debug_action_resolution_worker, spawn_debug_action_worker, spawn_debug_detail_worker,
-    spawn_debug_refresh_worker,
+    spawn_debug_action_resolution_worker, spawn_debug_detail_worker, spawn_debug_refresh_worker,
 };
 #[cfg(test)]
 use crate::types::{Scope, SortMode};
@@ -34,7 +33,7 @@ use crate::{
     rows::{build_rows, seed_logs_from_previous, sort_rows},
     systemd::{
         fetch_services, fetch_unit_files, filter_services, merge_unit_file_entries,
-        run_unit_action, select_enable_disable_action, select_start_stop_action, should_fetch_all,
+        select_enable_disable_action, select_start_stop_action, should_fetch_all,
     },
     types::{ActionResolutionRequest, ConfirmationState, UnitAction, UnitRow, WorkerMsg},
 };
@@ -134,34 +133,6 @@ pub fn spawn_detail_worker(config: &Config, unit: String, request_id: u64) -> Re
             let _ = tx.send(WorkerMsg::DetailLogsError {
                 unit,
                 request_id,
-                error: e.to_string(),
-            });
-        }
-    });
-    rx
-}
-
-/// Spawn a background worker that executes one unit action.
-pub fn spawn_unit_action_worker(
-    config: &Config,
-    unit: String,
-    action: UnitAction,
-) -> Receiver<WorkerMsg> {
-    #[cfg(feature = "debug_tui")]
-    if config.debug_tui {
-        return spawn_debug_action_worker(unit, action);
-    }
-
-    let (tx, rx) = mpsc::channel();
-    let scope = config.scope;
-    thread::spawn(move || match run_unit_action(scope, &unit, action) {
-        Ok(()) => {
-            let _ = tx.send(WorkerMsg::UnitActionQueued { unit, action });
-        }
-        Err(e) => {
-            let _ = tx.send(WorkerMsg::UnitActionError {
-                unit,
-                action,
                 error: e.to_string(),
             });
         }
@@ -405,67 +376,6 @@ mod tests {
                 assert!(error.contains("detail journal test error"));
             }
             other => panic!("expected DetailLogsError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unit_action_worker_emits_queued_on_success() {
-        let rx = spawn_unit_action_worker(
-            &Config {
-                load_filter: "loaded".to_string(),
-                active_filter: "active".to_string(),
-                sub_filter: "running".to_string(),
-                show_help: false,
-                show_version: false,
-                debug_tui: false,
-                scope: Scope::System,
-                sort_mode: SortMode::Name,
-            },
-            "demo.service".to_string(),
-            UnitAction::Start,
-        );
-        match rx
-            .recv_timeout(Duration::from_millis(500))
-            .expect("action msg")
-        {
-            WorkerMsg::UnitActionQueued { unit, action } => {
-                assert_eq!(unit, "demo.service");
-                assert_eq!(action, UnitAction::Start);
-            }
-            other => panic!("expected UnitActionQueued, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unit_action_worker_emits_error_on_failure() {
-        let rx = spawn_unit_action_worker(
-            &Config {
-                load_filter: "loaded".to_string(),
-                active_filter: "active".to_string(),
-                sub_filter: "running".to_string(),
-                show_help: false,
-                show_version: false,
-                debug_tui: false,
-                scope: Scope::System,
-                sort_mode: SortMode::Name,
-            },
-            "action-error.service".to_string(),
-            UnitAction::Stop,
-        );
-        match rx
-            .recv_timeout(Duration::from_millis(500))
-            .expect("action error msg")
-        {
-            WorkerMsg::UnitActionError {
-                unit,
-                action,
-                error,
-            } => {
-                assert_eq!(unit, "action-error.service");
-                assert_eq!(action, UnitAction::Stop);
-                assert!(error.contains("unit action test error"));
-            }
-            other => panic!("expected UnitActionError, got {other:?}"),
         }
     }
 
@@ -776,22 +686,6 @@ mod tests {
                 assert_eq!(confirmation, ConfirmationState::restart_or_stop(unit));
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
-        }
-
-        let action_rx = spawn_unit_action_worker(
-            &cfg,
-            "debug-api-gateway.service".to_string(),
-            UnitAction::Stop,
-        );
-        match action_rx
-            .recv_timeout(Duration::from_millis(500))
-            .expect("action msg")
-        {
-            WorkerMsg::UnitActionQueued { unit, action } => {
-                assert_eq!(unit, "debug-api-gateway.service");
-                assert_eq!(action, UnitAction::Stop);
-            }
-            other => panic!("expected UnitActionQueued, got {other:?}"),
         }
     }
 }

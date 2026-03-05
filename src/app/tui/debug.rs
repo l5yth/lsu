@@ -311,6 +311,17 @@ fn debug_enable_disable_action(template: DebugUnitTemplate) -> anyhow::Result<Un
     action_for_unit_file_state(template.unit_file_state)
 }
 
+/// Execute a unit action instantly without calling systemctl.
+///
+/// Used in `--debug-tui` mode so the debug TUI is fully self-contained and does not require a
+/// live systemd socket or polkit authentication agent.
+pub(super) fn run_debug_unit_action(
+    _unit: &str,
+    _action: crate::types::UnitAction,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
 /// Spawn a background worker that emits fake rows and fake preview logs.
 pub(super) fn spawn_debug_refresh_worker(previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
     let (tx, rx) = mpsc::channel();
@@ -384,28 +395,20 @@ pub(super) fn spawn_debug_action_resolution_worker(
     rx
 }
 
-/// Spawn a debug worker that simulates a unit action.
-pub(super) fn spawn_debug_action_worker(unit: String, action: UnitAction) -> Receiver<WorkerMsg> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        if template_for_unit(&unit).is_some() {
-            let _ = tx.send(WorkerMsg::UnitActionQueued { unit, action });
-        } else {
-            let _ = tx.send(WorkerMsg::UnitActionError {
-                unit,
-                action,
-                error: "unknown debug unit".to_string(),
-            });
-        }
-    });
-    rx
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::UnitAction;
     use ratatui::prelude::{Color, Style};
     use std::time::Duration;
+
+    #[test]
+    fn run_debug_unit_action_returns_ok_for_any_input() {
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Restart).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Stop).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Enable).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Disable).is_ok());
+    }
 
     #[test]
     fn build_debug_rows_stays_within_limit_and_covers_color_buckets() {
@@ -648,22 +651,6 @@ mod tests {
                 );
             }
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn spawn_debug_action_worker_emits_queued_for_known_units() {
-        let rx =
-            spawn_debug_action_worker("debug-api-gateway.service".to_string(), UnitAction::Restart);
-        match rx
-            .recv_timeout(Duration::from_millis(500))
-            .expect("action message")
-        {
-            WorkerMsg::UnitActionQueued { unit, action } => {
-                assert_eq!(unit, "debug-api-gateway.service");
-                assert_eq!(action, UnitAction::Restart);
-            }
-            other => panic!("expected UnitActionQueued, got {other:?}"),
         }
     }
 }

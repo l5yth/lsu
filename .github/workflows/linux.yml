@@ -32,7 +32,7 @@ jobs:
   ebuild:
     runs-on: ubuntu-latest
     container:
-      image: gentoo/stage3:latest
+      image: gentoo/stage3:systemd
 
     steps:
       - name: Checkout
@@ -51,13 +51,6 @@ jobs:
 
           mkdir -p /var/db/repos/gentoo
           emerge --sync --quiet
-
-          if [ ! -L /etc/portage/make.profile ]; then
-            profile_path="$(find /var/db/repos/gentoo/profiles/default/linux/amd64 -type f -name make.defaults | head -n1)"
-            if [ -n "${profile_path}" ]; then
-              ln -snf "$(dirname "${profile_path}")" /etc/portage/make.profile
-            fi
-          fi
 
       - name: Configure local overlay
         run: |
@@ -79,9 +72,22 @@ jobs:
           mkdir -p /etc/portage/package.accept_keywords
           printf "=app-misc/lsu-9999 **\n" > /etc/portage/package.accept_keywords/localrepo
 
-      - name: Validate ebuild and resolve install plan
+      - name: Generate manifest
         run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
             ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild manifest
+
+      - name: Install build dependencies
+        run: |
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            emerge --oneshot dev-vcs/git dev-lang/rust-bin
+
+      - name: Validate dependency resolution
+        run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
             emerge -pv =app-misc/lsu-9999
+
+      - name: Build ebuild
+        run: |
+          FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
+            ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild fetch unpack compile test

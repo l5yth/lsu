@@ -84,10 +84,10 @@ jobs:
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
             ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild manifest
 
-      - name: Install Rust toolchain
+      - name: Install build dependencies
         run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
-            emerge --oneshot dev-lang/rust-bin
+            emerge --oneshot dev-vcs/git dev-lang/rust-bin
 
       - name: Validate dependency resolution
         run: |

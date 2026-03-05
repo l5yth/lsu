@@ -52,13 +52,6 @@ jobs:
           mkdir -p /var/db/repos/gentoo
           emerge --sync --quiet
 
-          if [ ! -L /etc/portage/make.profile ]; then
-            profile_path="$(find /var/db/repos/gentoo/profiles/default/linux/amd64 -path '*/systemd*' -name make.defaults | head -n1)"
-            if [ -n "${profile_path}" ]; then
-              ln -snf "$(dirname "${profile_path}")" /etc/portage/make.profile
-            fi
-          fi
-
       - name: Configure local overlay
         run: |
           mkdir -p /var/db/repos/localrepo/{metadata,profiles,app-misc/lsu}

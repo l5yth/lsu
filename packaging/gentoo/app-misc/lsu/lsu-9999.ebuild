@@ -19,6 +19,7 @@ RDEPEND="
 	sys-apps/systemd
 "
 BDEPEND="
+	dev-vcs/git
 	|| ( dev-lang/rust dev-lang/rust-bin )
 "
 

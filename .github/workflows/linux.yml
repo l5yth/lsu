@@ -105,4 +105,4 @@ jobs:
             -v "${{ github.workspace }}":/repo \
             -w /repo \
             nixpkgs/nix-flakes \
-            nix build .#
+            sh -c 'git config --global --add safe.directory /repo && nix build .#'

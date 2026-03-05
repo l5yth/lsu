@@ -60,21 +60,22 @@ pub fn loading_units_status_text() -> String {
     format!("{MODE_LABEL}: loading units... | {}", list_controls_text())
 }
 
-/// Build the footer status text shown while a unit action is running.
-///
-/// `confirmation` must have kind `ConfirmAction`; calling this with a
-/// `RestartOrStop` confirmation is a programming error and will panic.
-pub fn action_status_text(rows: usize, confirmation: &ConfirmationState) -> String {
-    let verb = confirmation
-        .confirmed_action()
-        .expect("action_status_text requires a ConfirmAction confirmation")
-        .prompt_verb();
-    format!("{MODE_LABEL}: {rows} | {} {}...", verb, confirmation.unit)
-}
-
 /// Build the footer status text shown while an action prompt is being resolved.
 pub fn action_resolution_status_text(rows: usize, unit: &str) -> String {
     format!("{MODE_LABEL}: {rows} | resolving action for {unit}...")
+}
+
+/// Build the footer status text shown while waiting for authentication before a unit action.
+pub fn action_authenticating_status_text(
+    rows: usize,
+    action: crate::types::UnitAction,
+    unit: &str,
+) -> String {
+    format!(
+        "{MODE_LABEL}: {rows} | authenticating {} {}...",
+        action.as_systemctl_arg(),
+        unit,
+    )
 }
 
 /// Build the footer status text after a unit action request is queued.
@@ -175,17 +176,15 @@ mod tests {
     }
 
     #[test]
-    fn action_status_text_mentions_running_action() {
-        let confirmation =
-            ConfirmationState::confirm_action(UnitAction::Start, "demo.service".to_string());
-        let s = action_status_text(3, &confirmation);
-        assert!(s.contains("starting demo.service"));
-    }
-
-    #[test]
     fn action_resolution_status_text_mentions_target_unit() {
         let s = action_resolution_status_text(3, "demo.service");
         assert!(s.contains("resolving action for demo.service"));
+    }
+
+    #[test]
+    fn action_authenticating_status_text_mentions_unit_and_action() {
+        let s = action_authenticating_status_text(3, UnitAction::Start, "demo.service");
+        assert!(s.contains("authenticating start demo.service..."));
     }
 
     #[test]

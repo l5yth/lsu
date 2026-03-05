@@ -91,3 +91,18 @@ jobs:
         run: |
           FEATURES="-ipc-sandbox -network-sandbox -pid-sandbox -mount-sandbox -usersandbox -userpriv" \
             ebuild /var/db/repos/localrepo/app-misc/lsu/lsu-9999.ebuild fetch unpack compile test
+
+  nix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build Nix package
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}":/repo \
+            -w /repo \
+            nixpkgs/nix-flakes \
+            sh -c 'git config --global --add safe.directory /repo && nix build .#'

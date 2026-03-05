@@ -94,16 +94,12 @@ jobs:
 
   nix:
     runs-on: ubuntu-latest
+    container:
+      image: nixpkgs/nix-flakes
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v30
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
 
       - name: Build Nix package
         run: nix build .#

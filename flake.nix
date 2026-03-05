@@ -7,15 +7,27 @@
 
   outputs = { self, nixpkgs }:
     let
-      system = "x86_64-linux";
-      pkgs   = nixpkgs.legacyPackages.${system};
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "armv6l-linux"
+        "armv7l-linux"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems f;
     in {
-      packages.${system}.default =
-        pkgs.callPackage ./packaging/nix/default.nix { };
+      packages = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in {
+          default = pkgs.callPackage ./packaging/nix/default.nix { };
+        });
 
-      devShells.${system}.default = pkgs.mkShell {
-        inputsFrom = [ self.packages.${system}.default ];
-        packages   = [ pkgs.cargo pkgs.rustfmt pkgs.clippy ];
-      };
+      devShells = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in {
+          default = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.default ];
+            packages   = [ pkgs.cargo pkgs.rustfmt pkgs.clippy ];
+          };
+        });
     };
 }

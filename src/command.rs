@@ -117,6 +117,36 @@ pub fn cmd_stdout(cmd: &mut Command) -> std::result::Result<String, CommandExecE
     cmd_stdout_with_timeout(cmd, command_timeout())
 }
 
+/// Run a command with no timeout, blocking until the process exits.
+///
+/// Stderr is captured and included in the error on non-zero exit.
+/// Use for interactive commands (e.g. polkit-authenticated systemctl actions)
+/// where no timeout should be imposed.
+pub fn cmd_wait(cmd: &mut Command) -> std::result::Result<(), CommandExecError> {
+    let rendered = render_command(cmd);
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CommandExecError::Io(std::io::Error::other("missing child stderr pipe")))?;
+    let stderr_handle = thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stderr.read_to_end(&mut out);
+        out
+    });
+    let status = child.wait()?;
+    let stderr = stderr_handle.join().unwrap_or_default();
+    if !status.success() {
+        return Err(CommandExecError::NonZeroExit {
+            command: rendered,
+            status,
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Run a command with an explicit timeout and return UTF-8 decoded stdout on success.
 pub fn cmd_stdout_with_timeout(
     cmd: &mut Command,
@@ -615,6 +645,37 @@ mod tests {
         assert_eq!(resolved, target.canonicalize().expect("canonical target"));
         let _ = fs::remove_dir_all(trusted);
         let _ = fs::remove_dir_all(untrusted);
+    }
+
+    #[test]
+    fn cmd_wait_returns_ok_for_success() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 0");
+        cmd_wait(&mut cmd).expect("command should succeed");
+    }
+
+    #[test]
+    fn cmd_wait_returns_error_for_non_zero_exit() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("echo fail 1>&2; exit 3");
+        let err = cmd_wait(&mut cmd).expect_err("command should fail");
+        match err {
+            CommandExecError::NonZeroExit { status, stderr, .. } => {
+                assert_eq!(status.code(), Some(3));
+                assert!(stderr.contains("fail"));
+            }
+            other => panic!("expected non-zero exit error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn cmd_wait_non_zero_with_empty_stderr_omits_separator_suffix() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 5");
+        let err = cmd_wait(&mut cmd).expect_err("command should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("command failed (status="));
+        assert!(!msg.contains(" | "));
     }
 
     #[test]

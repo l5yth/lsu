@@ -23,7 +23,9 @@ use anyhow::{Result, anyhow};
 use std::process::{Command, Stdio};
 
 #[cfg(not(test))]
-use crate::command::{CommandExecError, cmd_stdout, command_timeout, resolve_trusted_binary};
+use crate::command::{
+    CommandExecError, cmd_stdout, cmd_wait, command_timeout, resolve_trusted_binary,
+};
 use std::collections::HashSet;
 
 #[cfg(test)]
@@ -172,7 +174,7 @@ pub fn run_unit_action(scope: Scope, unit: &str, action: UnitAction) -> Result<(
         cmd.arg(arg);
     }
     cmd.stdin(Stdio::inherit());
-    let _ = cmd_stdout(&mut cmd)
+    cmd_wait(&mut cmd)
         .with_context(|| format!("systemctl {} failed", action.as_systemctl_arg()))?;
     Ok(())
 }

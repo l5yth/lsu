@@ -129,7 +129,9 @@ pub fn cmd_wait(cmd: &mut Command) -> std::result::Result<(), CommandExecError> 
     let mut stderr = child
         .stderr
         .take()
-        .ok_or_else(|| CommandExecError::Io(std::io::Error::other("missing child stderr pipe")))?;
+        .ok_or(CommandExecError::Io(std::io::Error::other(
+            "missing child stderr pipe",
+        )))?;
     let stderr_handle = thread::spawn(move || {
         let mut out = Vec::new();
         let _ = stderr.read_to_end(&mut out);

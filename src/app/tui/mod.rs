@@ -64,9 +64,8 @@ use self::{
     input::{UiCommand, map_confirmation_key, map_key},
     render::draw_frame,
     state::{
-        MODE_LABEL, action_authenticating_status_text, action_error_status_text,
-        action_queued_status_text, action_resolution_status_text, list_status_text,
-        loading_units_status_text, stale_status_text,
+        MODE_LABEL, action_authenticating_status_text, action_resolution_status_text,
+        list_status_text, loading_units_status_text, stale_status_text,
     },
     workers::{spawn_action_resolution_worker, spawn_detail_worker, spawn_refresh_worker},
 };
@@ -108,10 +107,56 @@ fn resume_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Res
     Ok(())
 }
 
+/// Apply the result of a completed unit action: update the status line and schedule a refresh.
+///
+/// This is the pure-logic counterpart to `run_confirmed_action`; it can be unit-tested
+/// independently of the terminal I/O.
+#[allow(clippy::too_many_arguments)]
+fn apply_confirmed_action_result(
+    result: anyhow::Result<()>,
+    unit: &str,
+    action: crate::types::UnitAction,
+    rows_len: usize,
+    status_line: &mut String,
+    status_line_overrides_stale: &mut bool,
+    refresh_requested: &mut bool,
+    queued_action_refresh_deadline: &mut Option<Instant>,
+) {
+    let refresh_was_requested = *refresh_requested;
+    match result {
+        Ok(()) => {
+            *refresh_requested = true;
+            set_status_line(
+                status_line,
+                status_line_overrides_stale,
+                self::state::action_queued_status_text(rows_len, action, unit),
+                true,
+            );
+        }
+        Err(e) => {
+            set_status_line(
+                status_line,
+                status_line_overrides_stale,
+                self::state::action_error_status_text(rows_len, action, unit, &e.to_string()),
+                true,
+            );
+        }
+    }
+    defer_queued_action_refresh(
+        refresh_requested,
+        queued_action_refresh_deadline,
+        refresh_was_requested,
+        Instant::now(),
+    );
+}
+
 /// Suspend the terminal, run a unit action with authentication support, resume, and update status.
 ///
 /// Returns `Err` only if terminal suspension or resumption fails; action errors are reported
 /// via `status_line` rather than propagated.
+///
+/// When `debug_tui` is `true` (i.e. the `--debug-tui` flag was passed), action execution uses a
+/// self-contained stub so that no real systemd socket or polkit agent is required.
 #[cfg(not(test))]
 #[allow(clippy::too_many_arguments)]
 fn run_confirmed_action(
@@ -119,6 +164,7 @@ fn run_confirmed_action(
     scope: crate::types::Scope,
     unit: &str,
     action: UnitAction,
+    debug_tui: bool,
     rows_len: usize,
     status_line: &mut String,
     status_line_overrides_stale: &mut bool,
@@ -132,33 +178,27 @@ fn run_confirmed_action(
         true,
     );
     suspend_terminal(terminal)?;
-    let result = run_unit_action(scope, unit, action);
+    #[cfg(feature = "debug_tui")]
+    let result = if debug_tui {
+        self::debug::run_debug_unit_action(unit, action)
+    } else {
+        run_unit_action(scope, unit, action)
+    };
+    #[cfg(not(feature = "debug_tui"))]
+    let result = {
+        let _ = debug_tui;
+        run_unit_action(scope, unit, action)
+    };
     resume_terminal(terminal)?;
-    let refresh_was_requested = *refresh_requested;
-    match result {
-        Ok(()) => {
-            *refresh_requested = true;
-            set_status_line(
-                status_line,
-                status_line_overrides_stale,
-                action_queued_status_text(rows_len, action, unit),
-                true,
-            );
-        }
-        Err(e) => {
-            set_status_line(
-                status_line,
-                status_line_overrides_stale,
-                action_error_status_text(rows_len, action, unit, &e.to_string()),
-                true,
-            );
-        }
-    }
-    defer_queued_action_refresh(
+    apply_confirmed_action_result(
+        result,
+        unit,
+        action,
+        rows_len,
+        status_line,
+        status_line_overrides_stale,
         refresh_requested,
         queued_action_refresh_deadline,
-        refresh_was_requested,
-        Instant::now(),
     );
     Ok(())
 }
@@ -590,6 +630,7 @@ pub fn run() -> Result<()> {
                                     config.scope,
                                     &pending.unit,
                                     action,
+                                    config.debug_tui,
                                     rows.len(),
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
@@ -605,6 +646,7 @@ pub fn run() -> Result<()> {
                                     config.scope,
                                     &pending.unit,
                                     UnitAction::Restart,
+                                    config.debug_tui,
                                     rows.len(),
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
@@ -620,6 +662,7 @@ pub fn run() -> Result<()> {
                                     config.scope,
                                     &pending.unit,
                                     UnitAction::Stop,
+                                    config.debug_tui,
                                     rows.len(),
                                     &mut status_line,
                                     &mut status_line_overrides_stale,
@@ -801,8 +844,9 @@ mod tests {
     use super::state::{list_status_text, stale_status_text};
     use super::{
         ActionResolutionUiState, UNIT_ACTION_REFRESH_DELAY, activate_queued_action_refresh,
-        apply_action_resolution_msg, cancel_pending_action_resolution, defer_queued_action_refresh,
-        restore_list_status_line, set_list_status_line, set_status_line,
+        apply_action_resolution_msg, apply_confirmed_action_result,
+        cancel_pending_action_resolution, defer_queued_action_refresh, restore_list_status_line,
+        set_list_status_line, set_status_line,
     };
     use crate::rows::preserve_selection;
     use crate::types::{
@@ -1379,6 +1423,55 @@ mod tests {
         assert!(state.action_resolution_active.is_none());
         assert_eq!(state.status_line, state.list_status_line);
         assert!(!state.status_line_overrides_stale);
+    }
+
+    #[test]
+    fn apply_confirmed_action_result_ok_sets_queued_status_and_schedules_refresh() {
+        let mut status_line = String::new();
+        let mut override_stale = false;
+        let mut refresh = false;
+        let mut deadline = None;
+
+        apply_confirmed_action_result(
+            Ok(()),
+            "demo.service",
+            UnitAction::Restart,
+            3,
+            &mut status_line,
+            &mut override_stale,
+            &mut refresh,
+            &mut deadline,
+        );
+
+        assert!(status_line.contains("queued restart for demo.service"));
+        assert!(override_stale);
+        // refresh set to true, then deferred: deadline scheduled and refresh reset to false
+        assert!(!refresh);
+        assert!(deadline.is_some());
+    }
+
+    #[test]
+    fn apply_confirmed_action_result_err_sets_error_status_without_refresh() {
+        let mut status_line = String::new();
+        let mut override_stale = false;
+        let mut refresh = false;
+        let mut deadline = None;
+
+        apply_confirmed_action_result(
+            Err(anyhow::anyhow!("polkit denied")),
+            "demo.service",
+            UnitAction::Stop,
+            3,
+            &mut status_line,
+            &mut override_stale,
+            &mut refresh,
+            &mut deadline,
+        );
+
+        assert!(status_line.contains("failed to stop demo.service: polkit denied"));
+        assert!(override_stale);
+        assert!(!refresh);
+        assert!(deadline.is_none());
     }
 
     #[test]

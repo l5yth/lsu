@@ -311,6 +311,17 @@ fn debug_enable_disable_action(template: DebugUnitTemplate) -> anyhow::Result<Un
     action_for_unit_file_state(template.unit_file_state)
 }
 
+/// Execute a unit action instantly without calling systemctl.
+///
+/// Used in `--debug-tui` mode so the debug TUI is fully self-contained and does not require a
+/// live systemd socket or polkit authentication agent.
+pub(super) fn run_debug_unit_action(
+    _unit: &str,
+    _action: crate::types::UnitAction,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
 /// Spawn a background worker that emits fake rows and fake preview logs.
 pub(super) fn spawn_debug_refresh_worker(previous_rows: Vec<UnitRow>) -> Receiver<WorkerMsg> {
     let (tx, rx) = mpsc::channel();
@@ -387,8 +398,17 @@ pub(super) fn spawn_debug_action_resolution_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::UnitAction;
     use ratatui::prelude::{Color, Style};
     use std::time::Duration;
+
+    #[test]
+    fn run_debug_unit_action_returns_ok_for_any_input() {
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Restart).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Stop).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Enable).is_ok());
+        assert!(run_debug_unit_action("debug-foo.service", UnitAction::Disable).is_ok());
+    }
 
     #[test]
     fn build_debug_rows_stays_within_limit_and_covers_color_buckets() {
@@ -633,5 +653,4 @@ mod tests {
             other => panic!("expected ActionConfirmationReady, got {other:?}"),
         }
     }
-
 }

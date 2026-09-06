@@ -23,11 +23,13 @@ jobs:
         run: pacman -Syu --noconfirm --needed base-devel git sudo rust
 
       - name: Build and install AUR package
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           useradd -m builder
           echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R builder:builder "${GITHUB_WORKSPACE}"
-          su - builder -c "cd '${GITHUB_WORKSPACE}/packaging/archlinux' && sed -i \"s|^source=.*$|source=(\\\"lsu::git+https://github.com/${GITHUB_REPOSITORY}.git#commit=${GITHUB_SHA}\\\")|\" PKGBUILD && makepkg --syncdeps --noconfirm --cleanbuild --clean --install"
+          su - builder -c "cd '${GITHUB_WORKSPACE}/packaging/archlinux' && sed -i \"s|^source=.*$|source=(\\\"lsu::git+https://github.com/${GITHUB_REPOSITORY}.git#commit=${COMMIT}\\\")|\" PKGBUILD && makepkg --syncdeps --noconfirm --cleanbuild --clean --install"
 
   ebuild:
     runs-on: ubuntu-latest

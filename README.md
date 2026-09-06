@@ -69,7 +69,7 @@ cargo run --release --
 ## Usage
 
 ```text
-lsu v0.1.2
+lsu v0.1.3
 apache v2 (c) 2026 l5yth
 
 Usage: lsu [OPTIONS]
@@ -108,7 +108,11 @@ In-app keys:
 - `r`: refresh now
 - `↑` / `↓`: move selection in service unit list
 - `l` or `enter`: open detailed logs for selected service
-- Log view: `↑` / `↓` scroll logs, `b` or `esc` return to list
+- `s`: start, restart, or stop the selected service
+- `e`: enable or disable the selected service
+- Action prompts: `y` or `enter` to confirm, `n` or `esc` to cancel
+- Running services prompt: `r` to restart, `s` to stop, `esc` to cancel
+- Log view: `↑` / `↓` scroll logs, `l` refresh logs, `b` or `esc` return to list
 
 ## Development
 

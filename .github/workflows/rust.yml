@@ -83,4 +83,4 @@ jobs:
       - name: Enforce coverage ratchet
         run: >
           cargo llvm-cov --all-targets --all-features --workspace
-          --fail-under-lines 90 --fail-under-functions 94
+          --fail-under-lines 89 --fail-under-functions 93

@@ -64,3 +64,23 @@ jobs:
           files: lcov.info
           codecov_yml_path: .github/codecov.yml
           fail_ci_if_error: false
+
+  coverage-gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Enforce coverage ratchet
+        run: >
+          cargo llvm-cov --all-targets --all-features --workspace
+          --fail-under-lines 90 --fail-under-functions 94
